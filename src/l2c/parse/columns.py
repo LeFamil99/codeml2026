@@ -13,7 +13,7 @@ import re
 
 import numpy as np
 
-from ..geometry.grid import GridSystem, extract_grid
+from ..geometry.grid import locator
 from ..geometry.symbols import (calibrate_scale, candidate_symbols, matches_dimensions,
                                 parse_dimensions)
 from ..model import Armature, Debug, ElementRecord
@@ -48,14 +48,15 @@ def _value_right_of(page: PreparedPage, label, max_dx: float = 60.0) -> list[str
 
 
 def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord], dict]:
-    grid: GridSystem = extract_grid(page)
+    grid = locator(page)
     anchors = [w for w in page.words if w.text == "COL."]
     diag = {
-        "callouts": len(anchors),
+        "anchors": len(anchors),
         "grid_ok": grid.ok,
         "grid_letters": len(grid.letters),
         "grid_numbers": len(grid.numbers),
         "letter_role": grid.letter_role,
+        "source": grid.evidence.get("source"),
         "warnings": [],
     }
     if not anchors:
@@ -78,6 +79,8 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
                 vals = _tokens_right_of(page, t)
                 members += vals
                 lig = next((w.text for w in vals if _LIG.match(w.text)), None)
+        if not (dim_txt or arm or lig):
+            continue      # "℄ COL." on a dimension string (WP2 floor plans): no reinforcement
         xs = [w.x0 for w in members] + [w.x1 for w in members]
         ys = [w.y0 for w in members] + [w.y1 for w in members]
         blocks.append({
@@ -85,6 +88,10 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
             "bbox": (min(xs), min(ys), max(xs), max(ys)),
             "dims": parse_dimensions(dim_txt) if dim_txt else None,
         })
+
+    diag["callouts"] = len(blocks)
+    if not blocks:
+        return [], diag
 
     # ---- 2. detect symbols and self-calibrate the drawing scale against stated sizes
     symbols = candidate_symbols(page)

@@ -2,19 +2,23 @@
 
 Design document: **[PLAN.md](PLAN.md)** (measured evidence, architecture, open questions).
 
-## Status: Phase 1 thin vertical slice
+## Status: plan side complete, shop drawings next
 
 | | |
 |---|---|
-| ✅ | Plan-side **column** extraction (S-500), all four dev projects |
-| ✅ | Grid locator (`K-6`) from bubble labels + symbol geometry |
-| ✅ | Appendix-A conformant **JSON** + run manifest, deterministic |
-| ✅ | **Web dashboard**: upload / pick project → run → inspect → download |
+| ✅ | Plan-side extraction of **every element type**, all four dev projects |
+| | radier (S-050/060) · semelles (S-100) · poutres (S-300) · murs de refend (S-400) · colonnes (S-500) · dalles (S-600) |
+| ✅ | Grid locator from the drawn grid **lines** (`K-6`, `J-10.8`, `B.2-35`), correct on multi-view sheets |
+| ✅ | Wall locator `élévation B - RDC @ 2`, beam locator = beam mark (`P108`) |
+| ✅ | **6/6** answer-key rows (`CLP_dismatch.xlsx`) derived from the plan — `make truth` |
+| ✅ | Appendix-A conformant **JSON** + run manifest, deterministic, unique ids |
+| ✅ | **Web dashboard**: pick one project folder → run → inspect → download |
 | ⬜ | Shop-drawing reading (glyph decoder, PLAN §5) |
 | ⬜ | Plan ↔ atelier matching and non-conformity classification |
 | ⬜ | PDF report |
 
-Sheets outside this slice are reported as `skipped` with a reason — never counted as zero findings.
+Sheets with no element reinforcement (typical details, general-arrangement plans) are
+reported as `skipped` with the reason — never counted as zero findings.
 
 ## Quick start
 
@@ -31,7 +35,7 @@ make run PROJECT=WP2          # extract one project -> JSON + manifest
 make run-all                  # all four
 make validate-all             # check every JSON against Appendix A
 make summary                  # one-line extraction summary per project
-make truth                    # assert the S-502 / K-6 / 4-35M answer-key row
+make truth                    # check all 6 answer-key rows against the plan extraction
 make ui PORT=8520             # dashboard on another port
 make run CORPUS=/mnt/other    # a corpus somewhere else
 make clean                    # drop generated output and caches
@@ -46,25 +50,34 @@ Equivalent bare commands, if you prefer:
 .venv/bin/streamlit run app/streamlit_app.py
 ```
 
-## Measured results
+## Results on the four development projects (plan side)
 
 ```
-project   sheets  columns  located        units      time
-CLP        28/6       395  395 (100.0%)   imperial   1.0 s
-WP2        50/22     1087  1087 (100.0%)  metric     4.8 s
-LIGREP     40/11      677  655 (96.7%)    metric     1.5 s
-EspCa3B    72/23      644  644 (100.0%)   metric     1.6 s
-                     2803  2781 (99.2%)
+PROJECT  SHEETS  RECORDS  radier semelle poutre mur_refend colonne dalle  UNITS
+CLP          18     2027      74      75    177         80     395  1226  imperial
+WP2          33     3659      31     124    244        134     912  2214  metric
+LIGREP       26     2585       —     112    218        108     677  1470  metric
+EspCa3B      45     2276      54      20    183        241     644  1134  metric
+                   10547
 ```
 
-Ground truth: answer-key row *S-502 / K-6 / `4-35M`* is derived by the pipeline, not
-hardcoded — it requires grid axes, symbol detection, scale calibration (0.75 pt/inch =
-1/8"=1'-0") and the global callout↔symbol assignment all to be correct.
+`SHEETS` = sheets with element reinforcement; the rest (typical details, general
+arrangement plans) are listed as skipped with the reason. Every record gets a locator,
+but a locator is not proof of correctness. The checks that are:
+
+- **Answer key** — `make truth` derives all 6 rows of `CLP_dismatch.xlsx` from the
+  drawings (radier `J-10.8`, footing `L-13`, wall `élévation B - RDC @ 2`, columns
+  `K-6` and `I-13`, slab `J-15`). The key is read at run time, never copied into code.
+- **Grid geometry** — where the line grid and the old label-only grid disagreed on
+  columns, the line grid puts the symbol 0.0–0.6 pt from its grid lines, the old one
+  20–326 pt (fractional `B.2`, primed `F'`, doubled `CC` labels).
+
+Only CLP has an answer key; the rules were each checked on all four projects.
 
 ## Tests
 
 ```bash
-make test            # 53 tests, ~30 s, against the real corpus
+make test            # 74 tests, ~90 s, against the real corpus
 make test-coords     # just the coordinate-trap guards
 make test-e2e        # just the end-to-end corpus runs
 make test-ui         # just the headless dashboard tests
@@ -75,8 +88,11 @@ What they guard:
 - **`test_coords.py`** — the two coordinate traps: non-zero MediaBox origin (19% of
   pages) and `/Rotate 90` (65%). Includes a test showing pdfplumber would be off by
   `dx=-1727.7`.
-- **`test_end_to_end.py`** — per-project volume, locator coverage, unit auto-detection,
-  schema validity, byte-level determinism, the K-6 ground truth, scale calibration.
+- **`test_end_to_end.py`** — per-project and per-type volume, unique ids, locator
+  coverage, unit auto-detection, schema validity, byte-level determinism, all 6
+  answer-key rows, scale calibration.
+- **`test_sheets.py`** — every page has a unique sheet number (incl. `S-600A`,
+  `S-103.a`); sheet type agrees with the numbering series; multi-view grid (`J-10.8`).
 - **`test_app.py`** — the dashboard driven headlessly by `streamlit.testing`.
 - **`test_model.py`** — an `M`→`H` glyph misread is unrepresentable (`Armature(diametre="25H")`
   raises); see PLAN §5.14 for the measured 83% raw error rate.
@@ -92,8 +108,13 @@ pipeline is fully local — no cloud services and no external AI APIs at runtime
 
 ## Known issues
 
-- 22 of 677 LIGREP elements still unlocated (incomplete letter axis on some sheets).
-- Occasional duplicate locators (two callouts resolving to one grid cell) — see the
-  Diagnostics tab.
-- 5 CLP callouts have no dimension-matching symbol; they fall back to the callout
-  position with reduced confidence.
+- Only CLP has an answer key: on WP2, LIGREP and EspCa3B correctness is backed by
+  geometry checks, not by labelled truth.
+- Slab (`dalle`) callouts are located at their own position; a callout placed between
+  two columns resolves to the nearer one (confidence reflects the distance).
+- Beams: a few titled beams have no callout found (WP2 7, LIGREP 14, EspCa3B 3 — some
+  are `POUTRE SUPPRIMÉ`); listed per sheet in the Diagnostics tab.
+- Radier layer in WP2/EspCa3B is inferred from each view's direction legend
+  (`RANG 1 & 4` / `RANG 2 & 3`), at reduced confidence.
+- 5 CLP column callouts have no dimension-matching symbol; they fall back to the
+  callout position with reduced confidence.

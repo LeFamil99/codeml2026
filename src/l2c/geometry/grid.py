@@ -201,3 +201,20 @@ def extract_grid(page: PreparedPage) -> GridSystem:
 
     evidence["source"] = "partial"
     return GridSystem(letters or b_letters, numbers or b_numbers, lrole or "rows", evidence)
+
+
+def locator(page: PreparedPage):
+    """The grid to locate against: drawn grid lines when the sheet has them (exact, and
+    correct on multi-view sheets), else the label-only fallback above.
+
+    Measured on the column sheets: where the two disagree, the line grid puts the symbol
+    0.0-0.6 pt from its lines, the label grid 20-326 pt (fractional ``B.2``, primed
+    ``F'`` and doubled ``CC`` labels defeat the label-only model).
+    """
+    from .gridlines import extract_lines
+
+    lines = extract_lines(page)
+    if lines.ok:
+        lines.evidence["source"] = "grid_lines"
+        return lines
+    return extract_grid(page)

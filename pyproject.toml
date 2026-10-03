@@ -10,6 +10,7 @@ dependencies = [
     "pillow>=10.1",
     "pydantic>=2.0",        # Appendix-A schema validation (mandatory per consignes)
     "reportlab>=4.0",       # PDF report (mandatory per consignes)
+    "openpyxl>=3.1",        # reads the *_dismatch.xlsx answer key (MIT)
 ]
 
 [project.optional-dependencies]

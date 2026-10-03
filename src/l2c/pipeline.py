@@ -1,9 +1,11 @@
-"""Project-level orchestration.
+"""Project-level orchestration - the whole plan set, plan side.
 
-SCOPE OF THIS SLICE: plan-side column (S-500) extraction only. Shop-drawing reading,
-matching and comparison are deliberately absent (PLAN SS12 Phase 1 thin slice), so that
-the JSON contract and the UI can be validated before the harder stages land.
-Sheets we cannot yet handle are reported explicitly as `skipped`, never silently.
+Every sheet is classified from its title (page.py) and sent to its type's parser:
+    S-050/060 radier   S-100 semelle   S-300 poutre   S-400 mur_refend
+    S-500 colonne      S-600 dalle
+Sheets that carry no element reinforcement (typical details, general-arrangement
+plans) are reported as `skipped` WITH the reason, never silently dropped.
+Shop-drawing reading, matching and comparison are later stages.
 """
 
 from __future__ import annotations
@@ -14,10 +16,28 @@ from dataclasses import dataclass, field
 
 from .model import ElementRecord, sort_key
 from .page import UNKNOWN_SHEET, open_document, prepare
-from .parse import columns
+from .parse import beams, columns, footings, radier, slabs, walls
 from .units import UnitSystem, detect_unit_system
 
-SUPPORTED_TYPES = {"colonne"}
+PARSERS = {
+    "colonne": columns.extract,
+    "semelle": footings.extract,
+    "mur_refend": walls.extract,
+    "dalle": slabs.extract,
+    "radier": radier.extract,
+    "poutre": beams.extract,
+}
+SUPPORTED_TYPES = set(PARSERS)
+
+
+def skip_reason(page) -> str:
+    t = page.title.upper()
+    if "TYPIQUE" in t:
+        return "détails typiques : aucun élément localisable sur la grille"
+    if "PLAN DU" in t or "PLAN DE LA" in t or "PLAN DES" in t:
+        return ("plan général d'aménagement : l'armature des dalles est sur la série S-600, "
+                "celle des colonnes sur la série S-500")
+    return "aucun type d'élément reconnu dans le titre du feuillet"
 
 
 @dataclass
@@ -87,19 +107,25 @@ def run_plan(plan_path: str, progress=None) -> ProjectResult:
         if progress:
             progress(i + 1, n, p.sheet_id)
         kind = p.type_element
-        if kind not in SUPPORTED_TYPES:
+        if kind not in PARSERS:
             sheets.append(SheetReport(p.sheet_id, i + 1, kind, p.niveau, 0, 0,
-                                      "skipped",
-                                      f"element type {kind!r} not implemented in this slice"))
+                                      "skipped", skip_reason(p)))
             continue
-        recs, diag = columns.extract(p, system)
+        recs, diag = PARSERS[kind](p, system)
         records.extend(recs)
         sheets.append(SheetReport(
             p.sheet_id, i + 1, kind, p.niveau, len(recs), diag.get("located", 0),
             "extracted" if recs else "no_callouts",
-            None if recs else "no COL. callouts on this sheet", diag,
+            None if recs else f"aucune annotation d'armature reconnue ({kind})", diag,
         ))
 
     records.sort(key=sort_key)
+    # ids must be unique project-wide; two callouts on one grid cell (a column's two
+    # slab callouts, a re-used footing mark) share a natural id, so suffix the repeats
+    seen: dict[str, int] = {}
+    for r in records:
+        k = seen[r.id] = seen.get(r.id, 0) + 1
+        if k > 1:
+            r.id = f"{r.id.removesuffix('_plan')}#{k}_plan"
     return ProjectResult(project, fichier, system, evidence, records, sheets,
                          round(time.time() - t0, 2))

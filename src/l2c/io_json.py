@@ -57,14 +57,14 @@ def write_run_manifest(path: str, result, extra: dict | None = None) -> None:
     from datetime import datetime, timezone
 
     manifest = {
-        "pipeline_version": "0.1.0-slice1",
+        "pipeline_version": "0.2.0-plan",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "python": platform.python_version(),
         "project": result.project,
         "plan_file": result.plan_file,
         "unit_system": result.unit_system,
         "unit_evidence": result.unit_evidence,
-        "scope": "plan-side columns (S-500) only; DA reading and comparison not in this slice",
+        "scope": "plan side, all six element types; DA reading and comparison are later stages",
         "totals": result.totals,
         "elapsed_s": result.elapsed_s,
     }

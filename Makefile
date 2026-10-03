@@ -70,12 +70,8 @@ test-e2e: ## Only the end-to-end corpus runs
 test-ui: ## Only the headless dashboard tests
 	$(PY) -m pytest tests/test_app.py -v
 
-truth: ## Print the answer-key row the pipeline must derive (S-502 / K-6 / 4-35M)
-	@$(PY) -c "from l2c.pipeline import run_plan; \
-import os; r=run_plan(os.path.join('$(CORPUS)','CLP','L2C_PLAN_STR_CLP.pdf')); \
-k=[x for x in r.records if x.feuillet=='S-502' and x.element=='K-6'][0]; \
-a=k.armature[0]; \
-print('S-502  K-6  ->  %d-%s   (answer key: 4-35M)  %s'%(a.quantite,a.diametre,'PASS' if (a.quantite,a.diametre)==(4,'35M') else 'FAIL'))"
+truth: ## Check every answer-key row (CLP_dismatch.xlsx) is derived from the plan
+	@$(PY) -m l2c.cli truth "$(CORPUS)/CLP"
 
 summary: ## One-line extraction summary per project
 	@printf "%-9s %7s %9s %14s %-9s\n" PROJECT SHEETS ELEMENTS LOCATED UNITS

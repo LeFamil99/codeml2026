@@ -22,18 +22,20 @@ from typing import Literal
 
 import pymupdf
 
-SHEET_ID = re.compile(r"^S-?\d{3}$")
+SHEET_ID = re.compile(r"^S-?\d{3}(\.?[A-Za-z])?$")      # S-502, S-600A, S-103.a
 UNKNOWN_SHEET = "UNKNOWN"
 
-_TYPE_KEYWORDS: list[tuple[str, str]] = [
-    ("COLONNE", "colonne"),
-    ("POUTRE", "poutre"),
-    ("CISAILLEMENT", "mur_refend"),
-    ("REFEND", "mur_refend"),
-    ("SEMELLE", "semelle"),
-    ("EMPATTEMENT", "semelle"),
-    ("RADIER", "radier"),
-    ("DALLE", "dalle"),
+# Title phrase -> element type, most specific first. Matched on the title PHRASE, not on
+# any keyword in the corner: "COLONNE" appears in WP2's floor-plan callouts and "DALLE"
+# in EspCa3B's foundation notes, which the old keyword scan mistook for the sheet type.
+_TYPE_RULES: list[tuple[re.Pattern, str | None]] = [
+    (re.compile(r"D[ÉE]TAILS? TYPIQUES?"), None),
+    (re.compile(r"PLAN DES COLONNES"), "colonne"),
+    (re.compile(r"[ÉE]L[ÉE]VATIONS? (DES )?POUTRES"), "poutre"),
+    (re.compile(r"CONTREVENTEMENT|MURS? DE REFEND|CISAILLEMENT"), "mur_refend"),
+    (re.compile(r"PLAN (AGRANDI )?DES RADIERS|VUE EN PLAN DES RADIERS"), "radier"),
+    (re.compile(r"PLAN DES FONDATIONS"), "semelle"),
+    (re.compile(r"\bARMATURE DU\b|COLLECTEURS"), "dalle"),
 ]
 _LEVEL = re.compile(
     r"\b(NIVEAU\s*\d+|NIV\.?\s*\d+|RDC|REZ-DE-CHAUSSÉE|SOUS-SOL|SS\d|TOIT(?:\s+APPENTIS)?"
@@ -41,6 +43,27 @@ _LEVEL = re.compile(
 )
 
 AxisRole = Literal["rows", "columns", "undetermined"]
+
+
+@dataclass(frozen=True)
+class Line:
+    """A text LINE as the PDF lays it out (one run of spans), in normalised page space."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+    size: float
+    vertical: bool
+
+    @property
+    def cx(self) -> float:
+        return (self.x0 + self.x1) / 2
+
+    @property
+    def cy(self) -> float:
+        return (self.y0 + self.y1) / 2
 
 
 @dataclass
@@ -80,6 +103,17 @@ class PreparedPage:
         return [Word(*w[:4], w[4]) for w in self._page.get_text("words")]
 
     @cached_property
+    def lines(self) -> list[Line]:
+        out = []
+        for b in self._page.get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                text = " ".join(sp["text"] for sp in l["spans"]).strip()
+                if text:
+                    out.append(Line(*l["bbox"], text, l["spans"][0]["size"],
+                                    abs(l["dir"][0]) < 0.5))
+        return out
+
+    @cached_property
     def drawings(self) -> list[dict]:
         """Vector paths, in the SAME space as ``words`` (guaranteed by remove_rotation)."""
         return self._page.get_drawings()
@@ -95,16 +129,22 @@ class PreparedPage:
 
     @cached_property
     def sheet_id(self) -> str:
-        """``S-502`` or ``UNKNOWN`` - never a guess (PLAN SS7.1)."""
-        ids = [w.text for w in self.title_block if SHEET_ID.match(w.text)]
-        if not ids:  # widened fallback window
-            wide = [
-                w.text
-                for w in self.words
-                if w.x0 > 0.45 * self.width and w.y0 > 0.70 * self.height and SHEET_ID.match(w.text)
-            ]
-            ids = wide
-        return ids[-1].replace("S", "S-").replace("--", "-") if ids else UNKNOWN_SHEET
+        """``S-502`` / ``S-600A`` / ``S-103.a`` or ``UNKNOWN`` - never a guess.
+
+        The sheet number is the LARGEST sheet-id token in the title block (34.9 pt on
+        three projects, 25.6 pt on EspCa3B); smaller ones are cross-references such as
+        "VOIR S-201", which the old last-token rule picked on 9 pages.
+        """
+        def pick(words):
+            ids = [w for w in words if SHEET_ID.match(w.text)]
+            return max(ids, key=lambda w: (round(w.y1 - w.y0, 1), w.x0, w.y0)) if ids else None
+
+        w = pick(self.title_block) or pick(
+            [w for w in self.words if w.x0 > 0.45 * self.width and w.y0 > 0.70 * self.height])
+        if w is None:
+            return UNKNOWN_SHEET
+        t = w.text
+        return t if t.startswith("S-") else "S-" + t[1:]
 
     @cached_property
     def title(self) -> str:
@@ -115,8 +155,8 @@ class PreparedPage:
     @cached_property
     def type_element(self) -> str | None:
         up = self.title.upper()
-        for needle, value in _TYPE_KEYWORDS:
-            if needle in up:
+        for rx, value in _TYPE_RULES:
+            if rx.search(up):
                 return value
         return None
 

@@ -16,12 +16,24 @@ from conftest import PROJECTS, plan_path
 from l2c import io_json
 from l2c.pipeline import run_plan
 
-#: measured floor for located-on-grid ratio, per project (PLAN SS6.1 collinear axes)
+#: measured on the whole plan set (2026-10-03); floors sit ~5% under the measurement
 EXPECTED = {
-    "CLP":     {"min_records": 390, "min_located_pct": 99.0, "units": "imperial"},
-    "WP2":     {"min_records": 1080, "min_located_pct": 99.0, "units": "metric"},
-    "LIGREP":  {"min_records": 670, "min_located_pct": 95.0, "units": "metric"},
-    "EspCa3B": {"min_records": 640, "min_located_pct": 99.0, "units": "metric"},
+    "CLP":     {"min_records": 1925, "min_located_pct": 99.0, "units": "imperial"},
+    "WP2":     {"min_records": 3475, "min_located_pct": 99.0, "units": "metric"},
+    "LIGREP":  {"min_records": 2455, "min_located_pct": 95.0, "units": "metric"},
+    "EspCa3B": {"min_records": 2160, "min_located_pct": 99.0, "units": "metric"},
+}
+
+#: per-type record counts measured on the whole plan set (radier: LIGREP has none)
+MEASURED_BY_TYPE = {
+    "CLP":     {"radier": 74, "semelle": 75, "poutre": 177, "mur_refend": 80,
+                "colonne": 395, "dalle": 1226},
+    "WP2":     {"radier": 31, "semelle": 124, "poutre": 244, "mur_refend": 134,
+                "colonne": 912, "dalle": 2214},
+    "LIGREP":  {"semelle": 112, "poutre": 218, "mur_refend": 108,
+                "colonne": 677, "dalle": 1470},
+    "EspCa3B": {"radier": 54, "semelle": 20, "poutre": 183, "mur_refend": 241,
+                "colonne": 644, "dalle": 1134},
 }
 
 
@@ -35,6 +47,22 @@ def test_extracts_expected_volume(results, project):
     r = results[project]
     exp = EXPECTED[project]
     assert len(r.records) >= exp["min_records"], f"{project}: extraction regressed"
+
+
+@pytest.mark.parametrize("project", PROJECTS)
+def test_every_element_type_is_extracted(results, project):
+    """The whole plan set, not just columns: each type present in the project is read."""
+    got: dict[str, int] = {}
+    for x in results[project].records:
+        got[x.type_element] = got.get(x.type_element, 0) + 1
+    for kind, n in MEASURED_BY_TYPE[project].items():
+        assert got.get(kind, 0) >= 0.9 * n, f"{project}/{kind}: {got.get(kind, 0)} < 90% of {n}"
+
+
+@pytest.mark.parametrize("project", PROJECTS)
+def test_record_ids_are_unique(results, project):
+    ids = [x.id for x in results[project].records]
+    assert len(ids) == len(set(ids))
 
 
 @pytest.mark.parametrize("project", PROJECTS)
@@ -101,10 +129,29 @@ def test_the_35M_outlier_is_unique_on_its_sheet(results):
 
 @pytest.mark.parametrize("project", PROJECTS)
 def test_skipped_sheets_are_reported_not_hidden(results, project):
-    """A sheet we cannot handle must say so, never count as zero findings."""
-    skipped = [s for s in results[project].sheets if s.status == "skipped"]
-    assert skipped, "this slice only does columns, so some sheets must be skipped"
-    assert all(s.reason for s in skipped)
+    """Sheets without element reinforcement (typical details, general plans) must say
+    why, never count as zero findings - and no typed sheet may be skipped."""
+    for s in results[project].sheets:
+        if s.status == "skipped":
+            assert s.reason
+            assert s.type_element is None, f"{s.feuillet} is {s.type_element} but skipped"
+
+
+def test_every_answer_key_row_is_derived_from_the_plan(results, corpus):
+    """All six CLP_dismatch.xlsx rows - one per element type except beams - must be
+    reachable: a record on that sheet, at that locator, stating the plan value.
+    The key is read at run time, never copied into the code."""
+    import os
+
+    from l2c import answer_key
+
+    path = os.path.join(corpus, "CLP", "CLP_dismatch.xlsx")
+    if not os.path.isfile(path):
+        pytest.skip("answer key not available")
+    verdicts = answer_key.check(results["CLP"].records, answer_key.load(path), "imperial")
+    assert len(verdicts) == 6
+    failed = [(v.row.feuillet, v.row.localisation, v.row.plan) for v in verdicts if not v.found]
+    assert not failed, failed
 
 
 def test_cli_run_and_validate(corpus, tmp_path):

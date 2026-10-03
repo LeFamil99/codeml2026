@@ -2,6 +2,7 @@
 
     l2c run <project_dir | plan.pdf> [--out out/]
     l2c validate <elements.json>
+    l2c truth <project_dir>          check against the project's *_dismatch.xlsx
 """
 
 from __future__ import annotations
@@ -90,6 +91,28 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_truth(args: argparse.Namespace) -> int:
+    from . import answer_key
+
+    if not os.path.isdir(args.project):
+        print(f"not a directory: {args.project}")
+        return 2
+    keys = [f for f in sorted(os.listdir(args.project)) if f.lower().endswith("_dismatch.xlsx")]
+    if not keys:
+        print(f"no *_dismatch.xlsx answer key in {args.project} (only CLP has one)")
+        return 2
+    result = run_plan(_resolve(args.project))
+    rows = answer_key.load(os.path.join(args.project, keys[0]))
+    verdicts = answer_key.check(result.records, rows, result.unit_system)
+    print(f"{'FEUILLET':<9}{'LOCALISATION':<26}{'PLAN L2C':<20}{'RECORDS':>8}  VERDICT")
+    for v in verdicts:
+        print(f"{v.row.feuillet:<9}{v.row.localisation:<26}{v.row.plan:<20}"
+              f"{v.candidates:>8}  {'PASS' if v.found else 'FAIL'}")
+    ok = sum(v.found for v in verdicts)
+    print(f"\n{ok}/{len(verdicts)} answer-key rows derived from the plan")
+    return 0 if ok == len(verdicts) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="l2c", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -103,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("validate", help="check a JSON file against Appendix A")
     v.add_argument("path")
     v.set_defaults(func=cmd_validate)
+
+    t = sub.add_parser("truth", help="check the plan side against the answer key")
+    t.add_argument("project", help="project directory containing *_dismatch.xlsx")
+    t.set_defaults(func=cmd_truth)
 
     args = ap.parse_args(argv)
     return args.func(args)

@@ -2,6 +2,9 @@
 
 Streamlit's AppTest executes the real script, so an exception anywhere in intake,
 extraction, the charts or the download buttons fails this test.
+
+The dashboard analyses ONE project at a time: by default it points at the folder of
+projects and you pick one from the dropdown; a single project folder also works directly.
 """
 
 from __future__ import annotations
@@ -16,36 +19,70 @@ from streamlit.testing.v1 import AppTest
 APP = os.path.join(os.path.dirname(__file__), "..", "app", "streamlit_app.py")
 
 
-@pytest.fixture(scope="module")
-def app(corpus):
-    at = AppTest.from_file(APP, default_timeout=180)
+def _at(path: str) -> AppTest:
+    """Run the app pointed at `path`."""
+    at = AppTest.from_file(APP, default_timeout=300)
     at.run()
+    at.sidebar.text_input[0].set_value(path).run()
     return at
 
 
-def test_app_runs_without_exceptions(app):
-    assert not app.exception, [str(e) for e in app.exception]
+@pytest.fixture(scope="module")
+def clp(corpus):
+    return _at(os.path.join(corpus, "CLP"))
 
 
-def test_it_discovers_the_projects_and_selects_one(app):
-    options = app.sidebar.selectbox[0].options
+def test_app_runs_without_exceptions(clp):
+    assert not clp.exception, [str(e) for e in clp.exception]
+
+
+def test_one_project_folder_needs_no_picker(clp):
+    """The whole point: a project folder is analysed directly, with no dropdown."""
+    assert len(clp.sidebar.selectbox) == 0
+    assert "CLP" in clp.sidebar.success[0].value
+
+
+def test_headline_metrics_are_populated(clp):
+    labels = {m.label: m.value for m in clp.metric}
+    assert "Localisés sur la grille" in labels
+    assert labels["Système d'unités"] == "imperial"      # CLP is the imperial project
+
+
+def test_all_five_tabs_present(clp):
+    assert len(clp.tabs) == 5
+
+
+def test_default_offers_the_four_projects_in_a_dropdown():
+    at = AppTest.from_file(APP, default_timeout=300)
+    at.run()
+    assert not at.exception, [str(e) for e in at.exception]
+    if at.sidebar.selectbox:
+        assert {"CLP", "WP2", "LIGREP", "EspCa3B"} <= set(at.sidebar.selectbox[0].options)
+
+
+def test_a_parent_folder_makes_you_choose_exactly_one(corpus):
+    at = _at(corpus)
+    assert not at.exception, [str(e) for e in at.exception]
+    options = at.sidebar.selectbox[0].options
     for project in ("CLP", "WP2", "LIGREP", "EspCa3B"):
         assert project in options
 
-
-def test_headline_metrics_are_populated(app):
-    labels = {m.label: m.value for m in app.metric}
-    assert "Localisés sur la grille" in labels
-    assert "Système d'unités" in labels
-    assert labels["Système d'unités"] == "imperial"      # CLP is selected first
-
-
-def test_all_five_tabs_present(app):
-    assert len(app.tabs) == 5
-
-
-def test_switching_project_reruns_cleanly(app):
-    app.sidebar.selectbox[0].set_value("EspCa3B").run()
-    assert not app.exception, [str(e) for e in app.exception]
-    labels = {m.label: m.value for m in app.metric}
+    at.sidebar.selectbox[0].set_value("EspCa3B").run()
+    assert not at.exception, [str(e) for e in at.exception]
+    labels = {m.label: m.value for m in at.metric}
     assert labels["Système d'unités"] == "metric"
+
+
+def test_a_bad_path_stops_cleanly(corpus):
+    at = _at(os.path.join(corpus, "does-not-exist"))
+    assert not at.exception, [str(e) for e in at.exception]
+    assert at.sidebar.error
+    assert len(at.metric) == 0          # nothing was analysed
+
+
+def test_a_folder_without_a_plan_says_so(corpus, tmp_path_factory):
+    empty = str(tmp_path_factory.mktemp("no_plan"))
+    at = _at(empty)
+    assert not at.exception, [str(e) for e in at.exception]
+    assert "L2C_PLAN_STR" in at.sidebar.error[0].value
+    assert len(at.metric) == 0
