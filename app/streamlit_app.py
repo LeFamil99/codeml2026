@@ -149,6 +149,8 @@ section = st.segmented_control(
 
 if section == "Plan L2C":
     st.caption("Extraction côté plan (tous les types d'éléments) et base JSON.")
+    if st.button("Vider le cache et régénérer", key="regenerate_plan"):
+        _run_plan.clear(plan_path, os.path.getmtime(plan_path))
     with st.spinner(f"Extraction du plan de {chosen}…"):
         result = _run_plan(plan_path, os.path.getmtime(plan_path))
     views.render(views.PLAN, result)
@@ -158,6 +160,8 @@ else:
     if find_da_dir(project_dir) is None:
         st.warning(f"Aucun dossier DA dans {project_dir}.")
         st.stop()
+    if st.button("Vider le cache et régénérer", key="regenerate_atelier"):
+        _run_da.clear(project_dir, _da_stamp(project_dir))
     with st.spinner(f"Lecture des dessins d'atelier de {chosen}…"):
         result = _run_da(project_dir, _da_stamp(project_dir))
     views.render(views.ATELIER, result)

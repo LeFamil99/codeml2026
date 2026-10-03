@@ -50,6 +50,45 @@ Equivalent bare commands, if you prefer:
 .venv/bin/streamlit run app/streamlit_app.py
 ```
 
+## CLP slab image parser
+
+The original-plan slab reader also resolves circled integrity types from the plan's
+own detail table: CLP detail #101 on S-003 defines A as `2-15M` and B as `3-15M` in
+each direction. Integrity records retain NUM/ALP roles and their detail source,
+separately from ordinary numeric slab annotations.
+
+Both dashboard sections have **Vider le cache et régénérer** buttons. Each clears
+the selected project's cached result for that section and reruns its parser; the
+other section's cached result remains available.
+
+The standalone CLP slab parser reads **only the last page of each PDF**. It locates
+grey support rectangles using separate grids for the main view and inset details,
+then OCRs and associates nearby reinforcement callouts. It does not read the plan.
+
+```bash
+.venv/bin/pip install -e '.[da]'  # local OCR dependencies
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.dalle_clp \
+  --coordinate J-15 --check --annotated out/dalle_clp_review.pdf
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.dalle_clp \
+  ~/Downloads/l2c-participants/CLP/DA/Dalles \
+  --annotated out/dalle_reviews
+```
+
+**Final file to review: `out/dalle_clp_output.json`**, sanitized to include only
+populated grid locations, with directional reinforcement such as `22-15M`, lengths,
+raw OCR and read status. Unread intersections remain in the diagnostics file. The exact format and
+parser architecture are documented in [the parsers README](src/l2c/da/parsers/README.md).
+
+Other defaults: `CLP_DALLE NIV 3.pdf`, `out/dalle_clp.json` (Appendix A records) and
+`out/dalle_clp_diagnostics.json` (all detected supports, raw OCR, layer, direction,
+confidence and unread reasons). `out/dalle_clp_summaries.json` provides count–diameter
+strings such as `22-15M`; direction labels remain separate (`NUM: 3-15M · ALP: 3-15M`).
+Niveau 5's dashed column outlines in grey backgrounds are also detected.
+`--check` uses the hidden PDF text **only after**
+the image read, for validation. `--max-supports N` limits an exploratory run.
+Partial reads retain known values and flag unread lengths or marks. Dense callouts
+still need review; this parser is standalone and not yet wired into the dashboard.
+
 ## Results on the four development projects (plan side)
 
 ```

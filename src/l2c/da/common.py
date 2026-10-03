@@ -63,9 +63,10 @@ def _ocr_tolerant(t: str) -> tuple[str, bool]:
     """Read-noise a recogniser produces that the bar grammar can undo SAFELY, because a
     bar quantity is a whole number and a size is one of eight designators:
     a stray leading mark from a leader line (``-3 15J15-03``), a dot read for a space
-    (``15.15M`` -> ``15 15M``), a lost space before a mark whose size is the only valid
+    (``15.15M`` -> ``15 15M``), a doubled colon (``VERT: :4``), a lost space before a mark whose size is the only valid
     split (``415J5-06`` -> ``4 15J5-06``). Returns (text, changed)."""
     u = _SYMBOLS.sub(" ", t).strip()
+    u = re.sub(r":\s*:", ":", u)            # "VERT: :4 25M" - a dashed-line tick read as ':'
     u = _STRAY_LEAD.sub("", u)
     u = _DOT_SPACE.sub(r"\1 ", u)
     if (m := _LOST_SPACE.match(u)) and m.group(1):

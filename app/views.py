@@ -82,7 +82,9 @@ def bars(armature) -> str:
 def detail(d) -> str:
     extra = d.model_extra or {}
     bits = []
-    if extra.get("layer"):
+    if extra.get("integrity_type"):
+        bits.append(f"intégrité {extra['integrity_type']}")
+    if extra.get("layer") and extra["layer"] != "intégrité":
         bits.append(f"rang {extra['layer']}")
     if extra.get("role"):
         bits.append(extra["role"])
@@ -93,13 +95,20 @@ def detail(d) -> str:
     return ", ".join(bits)
 
 
+def record_bars(record) -> str:
+    roles = (record.debug.model_extra or {}).get("roles")
+    if roles and len(roles) == len(record.armature) and all(roles):
+        return " · ".join(f"{role}: {bars([bar])}" for role, bar in zip(roles, record.armature))
+    return bars(record.armature)
+
+
 def frames(result) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(elements, units) tables - identical columns for both sides where meaningful."""
     rows = [
         {
             "fichier": r.fichier, "feuillet": r.feuillet, "page": r.page, "element": r.element,
             "type": r.type_element, "niveau": r.debug.niveau or "",
-            "armature": bars(r.armature),
+            "armature": record_bars(r),
             "repère": " · ".join(a.repere for a in r.armature if a.repere),
             "détail": detail(r.debug),
             "x": round(r.x, 1), "y": round(r.y, 1),

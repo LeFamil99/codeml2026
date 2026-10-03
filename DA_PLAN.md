@@ -100,6 +100,44 @@ The fabricator's title block is not L2C's: the plan-side sheet-number reader ret
 
 ## Phases
 
+### Current work — CLP parsers by element type
+
+The current implementation uses image-only local OCR in standalone modules under
+`src/l2c/da/parsers/`. The earlier vector/text readers remain the dashboard path;
+the descriptions below document that earlier implementation.
+
+- `colonne_clp.py`: ruled schedule cells, bottom grid labels and storey strips.
+- `dalle_clp.py`: **last page only for each slab PDF**, as requested; circular grid
+  labels, independent main/inset grids, grey support rectangles and raised callouts.
+  Checks every labelled intersection, with crops anchored to grid coordinates rather
+  than wall centres. Full scans join overlapping text detections before recognition.
+  Accepts a PDF or a folder; development verification currently runs **Niveau 3 only,
+  last page (3/3)** to keep iteration short. The final review output is
+  `out/dalle_clp_output.json`; its sanitized JSON format and architecture are documented in
+  [the parsers README](src/l2c/da/parsers/README.md). Also writes Appendix-A JSON, diagnostics including unread
+  supports and partial marks/lengths, count–diameter summaries (`22-15M`), and an
+  optional annotated last-page PDF. Detects Niveau 5's dashed column outlines inside
+  grey backgrounds and accommodates RDC's stepped row-label strip.
+  The DA read is blind; `--check` consults the hidden text only for validation.
+  The J-15 / Niveau 3 integrity callout reads both `NUM` and `ALP`, each
+  `3 15M 11-03`. Dense regions and off-grid rectangles remain explicit limitations.
+  Current verification: Niveau 3 page 3/3, 380 labelled intersections checked,
+  75 records / 142 reinforcement entries in 218.8 seconds; 24 focused tests passed.
+  Local quantity/diameter checks match at 61/75 populated locations, all-field
+  checks at 56/75. Two empty reads have bars in their compared crops; 21 locations
+  are flagged for review in total. The full six-file run was stopped at the user's
+  request to iterate on one file.
+
+Run examples and OCR dependencies are in README's “CLP slab image parser” section.
+
+Original-plan integrity is now extracted by `parse/slab_integrity.py`: the source
+document's detail table defines the circled A–I types, with two separate directional
+entries. On CLP S-601 and S-602, 70 integrity labels per sheet resolve without missing
+definitions. Numeric slab annotations remain separate and retain parenthesized
+counts. The dashboard can regenerate either section with its own cache button.
+The final standalone DA review artifact is sanitized JSON; blank/unread rows stay
+in diagnostics, and optional unknown review fields are omitted.
+
 ### Phase 0 — Tab shell, shared components, DA inventory
 
 - [x] Move view functions to `app/views.py`, parameterised by a `Dataset` spec
