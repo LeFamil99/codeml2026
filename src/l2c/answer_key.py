@@ -75,3 +75,16 @@ def check(records: list[ElementRecord], rows: list[KeyRow], system: UnitSystem) 
         hit = next((r for r in here if states(r, row.plan, system)), None)
         out.append(Verdict(row, hit is not None, len(here), hit))
     return out
+
+
+def check_atelier(records: list[ElementRecord], rows: list[KeyRow],
+                  system: UnitSystem) -> list[Verdict]:
+    """Same check for the shop-drawing side: a DA record at the row's locator stating
+    the ``Dessin d'atelier`` value. DA sheet numbers are the fabricator's, so only the
+    locator and the value are matched."""
+    out = []
+    for row in rows:
+        here = [r for r in records if r.element == row.localisation]
+        hit = next((r for r in here if states(r, row.atelier, system)), None)
+        out.append(Verdict(row, hit is not None, len(here), hit))
+    return out

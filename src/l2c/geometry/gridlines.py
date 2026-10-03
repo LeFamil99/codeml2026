@@ -5,9 +5,10 @@ each repeating the grid bubbles at a different place. A page-wide "label -> one
 coordinate" model cannot represent that. Every grid line here keeps its own extent,
 so a point is located against the lines of the view it actually sits in.
 
-Signature, measured on all four projects: a grid line is a chain of >= 6 short,
-collinear, same-style segments (pre-dashed centre line) >= 150 pt long, with its
-bubble label just past one end.
+Signature, measured: a grid line is >= 150 pt long with its bubble label just past one
+end, drawn EITHER as a chain of >= 6 short collinear same-style segments (the L2C plans'
+CAD pre-splits its centre lines) OR as one segment carrying a dash pattern such as
+``[7.92 3 2.04 3]`` (the CLP fabricator's CAD).
 """
 
 from __future__ import annotations
@@ -95,10 +96,16 @@ class LineGrid:
         return min(ds) if ds else 300.0
 
 
+def _patterned(d: dict) -> bool:
+    dashes = (d.get("dashes") or "").strip()
+    return bool(dashes) and not dashes.startswith("[]") and dashes != "[ ] 0"
+
+
 def _dash_runs(page: PreparedPage, min_len=150.0, min_pieces=6, gap=15.0):
     groups: dict[tuple, list[tuple[float, float]]] = collections.defaultdict(list)
     for d in page.drawings:
-        style = (d.get("color"), round(d.get("width") or 0, 2))
+        pat = _patterned(d)
+        style = (d.get("color"), round(d.get("width") or 0, 2), pat)
         for it in d["items"]:
             if it[0] != "l":
                 continue
@@ -108,17 +115,22 @@ def _dash_runs(page: PreparedPage, min_len=150.0, min_pieces=6, gap=15.0):
             elif abs(a.x - b.x) < 0.5 and abs(a.y - b.y) > 0.3:
                 groups[("v", round(a.x * 2) / 2, style)].append((min(a.y, b.y), max(a.y, b.y)))
     out = []
-    for (o, c, _), iv in groups.items():
+    for (o, c, style), iv in groups.items():
+        pat = style[2]
         iv.sort()
         lo, hi, n = iv[0][0], iv[0][1], 1
+
+        def keep():
+            return hi - lo >= min_len and (n >= min_pieces or pat)
+
         for s, e in iv[1:]:
             if s - hi <= gap:
                 hi, n = max(hi, e), n + 1
                 continue
-            if hi - lo >= min_len and n >= min_pieces:
+            if keep():
                 out.append((o, c, lo, hi))
             lo, hi, n = s, e, 1
-        if hi - lo >= min_len and n >= min_pieces:
+        if keep():
             out.append((o, c, lo, hi))
     return out
 

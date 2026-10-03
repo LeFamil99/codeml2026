@@ -48,9 +48,11 @@ class SheetReport:
     niveau: str | None
     records: int
     located: int
-    status: str                      # "extracted" | "skipped" | "no_callouts"
+    status: str                      # "extracted" | "skipped" | "no_callouts" | "unread"
     reason: str | None = None
     diagnostics: dict = field(default_factory=dict)
+    fichier: str | None = None       # DA side: the file this page belongs to
+    tier: int | None = None          # DA side: reading tier (1 text, 2 glyphs, 3 raster, 4 none)
 
 
 @dataclass
@@ -62,6 +64,7 @@ class ProjectResult:
     records: list[ElementRecord]
     sheets: list[SheetReport]
     elapsed_s: float
+    meta: dict = field(default_factory=dict)
 
     @property
     def totals(self) -> dict:

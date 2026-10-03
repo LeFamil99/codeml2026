@@ -110,6 +110,18 @@ def cmd_truth(args: argparse.Namespace) -> int:
               f"{v.candidates:>8}  {'PASS' if v.found else 'FAIL'}")
     ok = sum(v.found for v in verdicts)
     print(f"\n{ok}/{len(verdicts)} answer-key rows derived from the plan")
+
+    from .da.pipeline import run_da
+
+    da = run_da(args.project)
+    dv = answer_key.check_atelier(da.records, rows, da.unit_system)
+    print(f"\n{'FEUILLET':<9}{'LOCALISATION':<26}{'ATELIER':<20}{'RECORDS':>8}  VERDICT  (DA side)")
+    for v in dv:
+        print(f"{v.row.feuillet:<9}{v.row.localisation:<26}{v.row.atelier:<20}"
+              f"{v.candidates:>8}  {'PASS' if v.found else 'miss'}"
+              + (f"   {v.matched.fichier}" if v.matched else ""))
+    print(f"\n{sum(v.found for v in dv)}/{len(dv)} answer-key rows found in the shop drawings "
+          "(DA reading is in progress - DA_PLAN.md)")
     return 0 if ok == len(verdicts) else 1
 
 

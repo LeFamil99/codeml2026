@@ -14,6 +14,9 @@ APPENDIX_A_FIELDS = {"id", "source", "fichier", "feuillet", "page", "x", "y",
                      "type_element", "element", "armature"}
 
 
+
+PIPELINE_VERSION = "0.3.0-da"
+
 def dump_records(records: list[ElementRecord]) -> list[dict[str, Any]]:
     return [r.to_schema() for r in sorted(records, key=sort_key)]
 
@@ -57,7 +60,7 @@ def write_run_manifest(path: str, result, extra: dict | None = None) -> None:
     from datetime import datetime, timezone
 
     manifest = {
-        "pipeline_version": "0.2.0-plan",
+        "pipeline_version": PIPELINE_VERSION,
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "python": platform.python_version(),
         "project": result.project,

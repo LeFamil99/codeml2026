@@ -86,3 +86,34 @@ def test_a_folder_without_a_plan_says_so(corpus, tmp_path_factory):
     assert not at.exception, [str(e) for e in at.exception]
     assert "L2C_PLAN_STR" in at.sidebar.error[0].value
     assert len(at.metric) == 0
+
+
+# ------------------------------------------------------------- shop-drawing section
+@pytest.fixture(scope="module")
+def clp_da(corpus):
+    at = _at(os.path.join(corpus, "CLP"))
+    at.segmented_control[0].set_value("Dessins d'atelier").run()
+    return at
+
+
+def test_da_section_runs_without_exceptions(clp_da):
+    assert not clp_da.exception, [str(e) for e in clp_da.exception]
+
+
+def test_da_section_reuses_the_same_layout(clp_da):
+    """Same five sub-tabs; the per-unit tab is per DA page instead of per plan sheet."""
+    assert [t.label for t in clp_da.tabs] == [
+        "Vue d'ensemble", "Éléments", "Pages", "Diagnostics", "Téléchargements"]
+    labels = {m.label for m in clp_da.metric}
+    assert {"Localisés sur la grille", "Pages traitées", "Système d'unités"} <= labels
+
+
+def test_da_inventory_counts_every_page(clp_da):
+    """CLP's DA: 12 files, 34 pages, all with a text layer (measured)."""
+    m = {x.label: x.value for x in clp_da.metric}
+    assert m["Pages avec couche texte"] == "34"
+
+
+def test_da_units_come_from_the_shop_drawings_themselves(clp_da):
+    m = {x.label: x.value for x in clp_da.metric}
+    assert m["Système d'unités"] == "imperial"

@@ -26,11 +26,16 @@ _STIRRUP_N = re.compile(r"^(?P<q>\d+)\s*[ÉE]TRIERS?\s*(?P<size>\d{2})\s*M\b(?P<
 
 
 def _titles(page: PreparedPage):
-    out = []
-    for l in page.lines:
-        if not l.vertical and (m := _TITLE.match(l.text.strip())) and l.size >= 10:
-            out.append((m.group(1).replace("P-", "P"), l.cx, l.cy, m.group(2).strip()))
-    return out
+    """Beam titles: the LARGEST ``P### - section`` lines on the sheet (within 90 %).
+    Relative, not absolute: the plan's titles are 18 pt, CLP's fabricator's 9 pt, and
+    smaller matches are cross-references."""
+    hits = [(l, m) for l in page.lines
+            if not l.vertical and (m := _TITLE.match(l.text.strip()))]
+    if not hits:
+        return []
+    top = max(l.size for l, _ in hits)
+    return [(m.group(1).replace("P-", "P"), l.cx, l.cy, m.group(2).strip())
+            for l, m in hits if l.size >= 0.9 * top]
 
 
 def _spans(page: PreparedPage, titles):

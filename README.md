@@ -13,7 +13,7 @@ Design document: **[PLAN.md](PLAN.md)** (measured evidence, architecture, open q
 | ✅ | **6/6** answer-key rows (`CLP_dismatch.xlsx`) derived from the plan — `make truth` |
 | ✅ | Appendix-A conformant **JSON** + run manifest, deterministic, unique ids |
 | ✅ | **Web dashboard**: pick one project folder → run → inspect → download |
-| ⬜ | Shop-drawing reading (glyph decoder, PLAN §5) |
+| 🟡 | **Dessins d'atelier** tab, same layout — progress in **[DA_PLAN.md](DA_PLAN.md)**: text-layer DA read (CLP 7,751 records, LIGREP columns 324); 340 outlined pages await the glyph decoder |
 | ⬜ | Plan ↔ atelier matching and non-conformity classification |
 | ⬜ | PDF report |
 
