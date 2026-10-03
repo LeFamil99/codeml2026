@@ -1,0 +1,8 @@
+[server]
+# Project ZIPs measured at 30-94 MB (full corpus 292 MB); the 200 MB default would
+# reject a larger jury project (PLAN SS9.3.1).
+maxUploadSize = 1024
+headless = true
+
+[browser]
+gatherUsageStats = false

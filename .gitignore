@@ -1,0 +1,23 @@
+# ---- CONFIDENTIAL CORPUS: never commit drawing data (consignes, S4) ----
+l2c-participants/
+*participants*/
+**/L2C_PLAN_STR_*.pdf
+**/DA/
+*_dismatch.xlsx
+consignes-*.pdf
+
+# ---- generated artifacts ----
+out/
+.cache/
+*.png
+
+# ---- python ----
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# lockfiles from alternative installers
+uv.lock
