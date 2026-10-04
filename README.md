@@ -1,5 +1,22 @@
 # L2C Review — vérification des dessins d'atelier d'armature
 
+## Livrables
+
+Les livrables se trouvent à la racine du projet :
+
+| Fichier | Contenu |
+|---|---|
+| `WP2_elements_plan.json` | Éléments armés extraits du plan L2C du projet WP2 (annexe A) |
+| `LIGREP_elements_plan.json` | Éléments armés extraits du plan L2C du projet LIGREP (annexe A) |
+| `EspCa3B_elements_plan.json` | Éléments armés extraits du plan L2C du projet EspCa3B (annexe A) |
+| `CLP_comparaison.json` | Comparaison plan / dessins d'atelier du projet CLP, avec statut, motif et sources de chaque élément |
+| `CLP_rapport_comparaison.pdf` | Rapport PDF de la comparaison CLP |
+
+Le notebook de démonstration est dans le dossier `notebooks/` :
+`notebooks/exploration_and_colonnes_clp_demo.ipynb` (exploration et lecture des colonnes CLP).
+
+## Présentation
+
 Outil local, en Python, qui lit les **plans de structure L2C** et les **dessins
 d'atelier (DA)** du fabricant d'armature, en extrait chaque élément armé avec son
 feuillet et sa position X/Y, produit une base JSON conforme à l'annexe A des consignes,
@@ -25,7 +42,7 @@ Tout s'exécute sur le poste : aucun service infonuagique, aucune API d'IA exter
 | ✅ | **Tableau de bord** web | Téléverser le plan et les DA → extraire → inspecter → télécharger |
 | 🟡 | Extraction côté **DA** | Une seule méthode d'analyse, celle des **formats CLP** : colonnes, dalles, semelles, poutres, radiers, lus par OCR sur l'image de la page |
 | 🟡 | **Comparaison** plan ↔ DA | Cinq types ; liste les éléments lus des deux côtés dont les armatures diffèrent. C'est une comparaison de lectures, pas un verdict de conformité certifié |
-| 🟡 | **Rapport PDF** | Rapport de comparaison généré par ReportLab, téléchargeable depuis la section Comparaison |
+| ✅ | **Rapport PDF** | Rapport de comparaison généré par ReportLab, téléchargeable depuis la section Comparaison |
 | ⬜ | DA des autres fabricants | WP2, LIGREP, EspCa3B : aucune méthode d'analyse enregistrée |
 | ⬜ | Murs de refend côté DA | Aucun lecteur |
 
