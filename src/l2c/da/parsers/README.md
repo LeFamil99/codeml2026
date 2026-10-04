@@ -1,7 +1,7 @@
 # DA parsers: strategy and architecture
 
 This directory contains **one parser per element type and project/fabricator layout**.
-The current parsers are `colonne_clp.py` and `dalle_clp.py`. They are standalone
+The current parsers are `colonne_clp.py`, `dalle_clp.py` and `radier_clp.py`. They are standalone
 command-line tools used to develop and verify a format before integrating it into
 the main DA pipeline.
 
@@ -172,6 +172,72 @@ PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.dalle_clp \
 `--coordinate` is repeatable. `--max-supports N` limits an exploratory run;
 `--threads N` controls the OCR CPU budget.
 
+## CLP radiers: `radier_clp.py`
+
+One sheet holds several **plan views**, one per radier, each with its **own grid**:
+numbers along x, letters along y, in bubbles on the view's edge. The elevations between
+them carry a single bubble strip and are skipped. Every page is read.
+
+A radier bar is a heavy long stroke, horizontal or vertical, and bars come in pairs
+(`HAUT` over `BAS`). Each bar carries one spec line that **starts at a ringed rang
+number** (1–4):
+
+```text
+(2) TRAN: 24 30M 30RU19-09 @11"BAS       count, size, mark, spacing, face
+(4) LONG: 2x22 25M 25RL22-00 @8"HAUT     2x22 = two lapped bars at 22 positions
+(3) LONG: 10 25M 26-03 @8"HAUT           26-03 is a length, 26'-3"
+(4) L: 5 25RU8-04 @8"HAUT                the size is carried by the mark only
+```
+
+The parser:
+
+1. Finds grid bubbles by **Hough transform**, not by contour: a long label (`14.4`,
+   `12.7`) touches the outline and the circle is then no closed round shape.
+2. Builds a view from two numeric strips, top and bottom, repeating the same columns at
+   the same x. Two columns are enough (`7.3`, `7`); either strip may add an intermediate
+   axis. Side-by-side views share a bubble height, so a row of bubbles is split at wide
+   gaps. Row letters go to the view whose **columns** are nearest; a row may be labelled
+   on one side only, and a view may have a single row (`I`).
+3. Reads the view's title (`PLAN FONDATION - RADIER #n`) below it; details may sit
+   between the view and its title.
+4. Finds rang rings by template correlation: CLP draws the ring as a ragged hatched
+   band around an empty gap. Rings crossed by a bar, a revision cloud or a wall fill
+   need looser tests (partly inked gap, Hough votes); those candidates are only tried
+   off text already read and where a bar stroke runs beside them.
+5. Reads the spec **from the ring onward** — rightward, or upward for vertical text —
+   so the crop never includes the ring and never starts mid-line. The crop is centred
+   on the inked rows and cut at the first wide blank.
+6. Reads that crop at **three resolutions and requires agreement**. One recognition of a
+   line crossed by drawing strokes is right about 95 % of the time: a dashed grid line
+   through `16` read as `1` at full confidence. The rule-erased crop only breaks a
+   three-way split, because erasing a line along a digit's stem erases the digit too.
+   A reading without a second vote is kept with a note and a reduced confidence.
+7. Reads the digit in the ring. An unread ring takes the view's own unanimous reading
+   for that direction and face (`rang_source: "view"`), otherwise stays unknown.
+8. Links the spec to the heavy stroke on its baseline side and reports the axes that
+   stroke crosses (`span`).
+
+The coordinate is the grid intersection nearest the spec text, as on the plan side
+(`parse/radier.py`), in that view's own grid.
+
+`issues` list what could not be read and make the row `partial`. `notes` are things read
+correctly that deserve a look and are **never corrected**: a mark whose size differs from
+the stated size (`30M 35RU22-07`), a rang that disagrees with the face (ring 1 beside
+`HAUT`). A mark must end in a whole length: `25RL16 06` and `25RU21-0.0` are rejected,
+not shortened.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.radier_clp \
+  ~/Downloads/l2c-participants/CLP/DA/Fondations/CLP_RADIERS.pdf \
+  --check --annotated out/radier_clp_review.pdf
+```
+
+Measured on `CLP_RADIERS.pdf` (6 views, 95 specs in the hidden text): 93 read, all 93
+equal to the hidden text on every parsed field, in about two minutes. The 2 unread specs
+are one pair in radier #5 whose text is overprinted by a lap dimension inside a revision
+cloud. Without `--check` such a pair is invisible to the run: nothing reports a bar
+whose spec was never found.
+
 ## Required output convention for all future parsers
 
 The final review artifact must be **JSON**, with a clear default filename documented
@@ -251,6 +317,44 @@ Each support retains a status:
 With `--check`, `check_equal` compares all locally parsed reinforcement attributes;
 `check_count_size_equal` compares quantities and diameters. These checks validate
 transcription inside the selected regions, not complete engineering correspondence.
+
+### Radiers
+
+**Final file to review: `out/radier_clp_output.json`** — an array with one object per
+spec, i.e. per bar group, as the plan side emits one record per radier callout:
+
+```json
+{
+  "fichier": "CLP_RADIERS.pdf",
+  "page": 1,
+  "view": "view-1",
+  "radier": "RADIER #1",
+  "coordinate": "J-13",
+  "direction": "vertical",
+  "rang": 2,
+  "rang_source": "circle",
+  "face": "BAS",
+  "summary": "RANG 2: 30M@11\"",
+  "reinforcement": [
+    {"label": "TRAN", "formatted": "30M@11\"", "diametre": "30M", "espacement_mm": 279.4,
+     "quantite": 24, "repere": "30RU19-09", "raw": "TRAN: 24 30M 30RU19-09 @11\"BAS"}
+  ],
+  "span": ["J.5", "J"],
+  "status": "read",
+  "confidence": 0.97
+}
+```
+
+`summary` uses the plan's own radier grammar (`RANG 2: 30M@11"`). `quantite` is the
+total bar count: `2x22` gives 44, with `"sets": 2` kept beside it. `issues`, `notes`,
+`sets`, `longueur_mm` and `full_check` appear only when they apply.
+
+| Default output | Contents |
+|---|---|
+| **`out/radier_clp_output.json`** | **Final review JSON**, one object per spec. |
+| `out/radier_clp.json` | Appendix-A records: `source="atelier"`, `type_element="radier"`, `element` the coordinate, one `armature` entry with mark, size, count, spacing and length. The rang is the debug `layer`, as in `parse/radier.py`. |
+| `out/radier_clp_diagnostics.json` | Views and axes, every spec with its text box, bar stroke and oracle text, plus unread candidates and their reason. |
+| `--annotated PATH` | Review PDF: grid axes, spec boxes, the linked bar stroke, unread candidates in red. |
 
 ### Columns
 
