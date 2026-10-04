@@ -48,7 +48,14 @@ def render_comparison(plan, atelier):
     counts = {status: sum(row['status'] == status for row in rows) for status in labels}
     for column, status in zip(st.columns(len(labels)), labels):
         column.metric(labels[status], counts[status])
-    st.info("Radiers et types, niveaux ou couches sans données DA restent hors couverture. "
+    st.caption("Ces totaux comptent les groupes de données extraites, pas les non-conformités confirmées. "
+               "Une différence de coordonnée peut produire un absent de chaque côté.")
+    with st.expander("Répartition des résultats par type"):
+        breakdown = [dict(Type=TYPE_LABELS[kind], **{
+            labels[status]: sum(row['type_element'] == kind and row['status'] == status for row in rows)
+            for status in labels}) for kind in sorted({row['type_element'] for row in rows})]
+        st.table(pd.DataFrame(breakdown).set_index("Type"))
+    st.info("Les types, niveaux ou couches sans données DA restent hors couverture. "
             "Les poutres nécessitent une vérification du placement des barres, même lorsque leurs valeurs concordent.")
     for sheet in atelier.sheets:
         if sheet.status in ("unread", "no_callouts"):
@@ -133,7 +140,7 @@ ATELIER = Dataset(
     scope_md=(
         "Avancement détaillé : **DA_PLAN.md**.\n\n"
         "- ✅ Cinq lecteurs CLP : colonnes, dalles, semelles, poutres et radiers\n"
-        "- ✅ Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; radiers : fichier complet ; autres types : dernière page\n"
+        "- ✅ Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; radiers et dalles : fichier complet ; semelles et poutres : dernière page\n"
         "- ✅ Nettoyage des résultats, dédoublonnage et JSON annexe A\n"
         "- ⬜ Autres fichiers, projets et sélection directe des PDF dans l'interface\n\n"
         "Les lecteurs DA sont **aveugles** : ils ne voient jamais les valeurs du plan. "

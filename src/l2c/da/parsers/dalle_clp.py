@@ -409,10 +409,12 @@ def metadata(src: PageImage, filename: str) -> tuple[str | None, str | None]:
     m = re.search(r"NIVEAU\s*(\d+)", text)
     if m:
         level = f"NIVEAU {m.group(1)}"
-    elif "REZ" in text or "RDC" in text:
-        level = "RDC"
+    # A TRÉFOND sheet also prints "ARMATURE DU REZ-DE CHAUSSÉE" in its title block, so
+    # the explicit TRÉFOND wording is checked first.
     elif "TREFOND" in text:
         level = "TRÉFOND"
+    elif "REZ" in text or "RDC" in text:
+        level = "RDC"
     else:
         name = fold(filename)
         m = re.search(r"NIV\s*(\d+)", name)

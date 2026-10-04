@@ -81,7 +81,7 @@ import os, sys
 from pathlib import Path
 from l2c.da import dashboard, jobs
 def reader(page, filename):
-    assert page.number in (0, 1) if 'COLONNES' in filename else page.number == 1
+    assert page.number in (0, 1) if 'COLONNES' in filename else page.number == 0
     if ((sys.argv[2] == 'between_files' and 'DALLE' in filename) or
         (sys.argv[2] == 'within_column' and 'COLONNES' in filename and page.number == 1)):
         os._exit(137)

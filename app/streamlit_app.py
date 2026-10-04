@@ -187,7 +187,7 @@ elif section == "Comparaison":
     views.render_comparison(loaded[1], job.result())
 else:
     st.caption("Colonnes CLP : Partie 3 complet et supplément sous-sol (Partie 1, page 5). "
-               "Radiers : fichier complet. Dalles, semelles et poutres : dernière page.")
+               "Radiers et dalles (BAS, HAUT, intégrité) : fichier complet. Semelles et poutres : dernière page.")
     try:
         sources = configured_inputs(project_dir)
     except ValueError as error:

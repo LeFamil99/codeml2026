@@ -27,6 +27,10 @@ from .jobs import write_pickle
 
 PARSER_VERSION = "clp-image-parsers-v2-all-slabs"
 COLUMN_SCOPE = "all-pages-v2-floor-boundaries"
+# Slab PDFs hold three sheets each (BAS, HAUT, ACIER D'INTÉGRITÉ); all are read.
+DALLE_SCOPE = "all-pages-v2-bas-haut-integrite-tréfond"
+# Kinds whose checkpoints are saved page by page, and kinds read in full.
+PAGE_CHECKPOINT_KINDS = {"colonne", "radier", "dalle"}
 # Partie 1's first four schedules are superseded by Partie 3, but its fifth
 # sheet contains 23 additional basement columns absent from the newer PDF.
 COLUMN_SUPPLEMENT = "CLP_COLONNES Partie 1.pdf"
@@ -75,10 +79,9 @@ def input_stamp(project_dir: str) -> tuple:
     stamp = []
     for kind, path in input_files(configured_inputs(project_dir)):
         stat = path.stat() if path.is_file() else None
+        scope = {"colonne": COLUMN_SCOPE, "dalle": DALLE_SCOPE}.get(kind)
         stamp.append((kind, str(path), stat.st_mtime_ns if stat else None,
-                      stat.st_size if stat else None, COLUMN_SCOPE) if kind == "colonne" else
-                     (kind, str(path), stat.st_mtime_ns if stat else None,
-                      stat.st_size if stat else None))
+                      stat.st_size if stat else None, *([scope] if scope else [])))
     return tuple(stamp)
 
 
@@ -126,12 +129,14 @@ def file_checkpoint(kind, path, directory):
     fingerprint = [PARSER_VERSION, kind, str(path.resolve()), stat.st_mtime_ns, stat.st_size]
     if kind == "colonne":
         fingerprint.append(COLUMN_SCOPE)
+    elif kind == "dalle":
+        fingerprint.append(DALLE_SCOPE)
     key = hashlib.sha256(json.dumps(fingerprint).encode()).hexdigest()
     return fingerprint, Path(directory) / f"{key}.pkl"
 
 
 def last_page_only(kind, path):
-    return kind not in {"colonne", "radier"} or (kind == "colonne" and Path(path).name == COLUMN_SUPPLEMENT)
+    return kind not in PAGE_CHECKPOINT_KINDS or (kind == "colonne" and Path(path).name == COLUMN_SUPPLEMENT)
 
 
 def load_checkpoint(path, fingerprint):
@@ -234,7 +239,7 @@ def run_da(project_dir: str, progress=None,
                     page_progress(path.name, number, len(document), False, False)
                 page_fingerprint = [*fingerprint, "page", number] if fingerprint else None
                 page_cache = None
-                if checkpoints and kind in {"colonne", "radier"}:
+                if checkpoints and kind in PAGE_CHECKPOINT_KINDS:
                     page_directory = checkpoints / "pages"
                     page_directory.mkdir(mode=0o700, exist_ok=True)
                     key = hashlib.sha256(json.dumps(page_fingerprint).encode()).hexdigest()
@@ -294,7 +299,7 @@ def run_da(project_dir: str, progress=None,
                                                   "records": page_records, "sheet": report})
                 recs.extend(page_records)
                 reports.append(report)
-                if page_progress and kind in {"colonne", "radier"}:
+                if page_progress and kind in PAGE_CHECKPOINT_KINDS:
                     page_progress(path.name, number, len(document), True, cached is not None)
         if kind == "colonne" and all("cells" in s.diagnostics for s in reports):
             # Reuse the column parser's existing coordinate/storey deduplication
@@ -318,7 +323,7 @@ def run_da(project_dir: str, progress=None,
             payload = {"fingerprint": fingerprint, "records": recs, "sheets": reports,
                        "sheet": reports[0]}
             write_pickle(checkpoint, payload)
-            if page_progress and kind not in {"colonne", "radier"}:
+            if page_progress and kind not in PAGE_CHECKPOINT_KINDS:
                 page_progress(path.name, reports[0].page,
                               reports[0].diagnostics['document_pages'], True, False)
             if file_done:
@@ -352,8 +357,8 @@ def run_da(project_dir: str, progress=None,
         "imperial", {"basis": "CLP fabricator notation; dedicated parsers convert inches to mm"},
         align_records(records), sheets, round(time.monotonic() - started, 2),
         meta={"parser_version": PARSER_VERSION, "files": len(files), "pages": len(sheets),
-              "inputs": sources, "last_page_only": not ({"colonne", "radier"} & inputs.keys()),
-              "page_policy": {kind: "all" if kind in {"colonne", "radier"} else "last" for kind in inputs},
+              "inputs": sources, "last_page_only": not (PAGE_CHECKPOINT_KINDS & inputs.keys()),
+              "page_policy": {kind: "all" if kind in PAGE_CHECKPOINT_KINDS else "last" for kind in inputs},
               "tiers": {3: len(sheets)},
               "checkpoint_hits": checkpoint_hits,
               "page_checkpoint_hits": page_checkpoint_hits,

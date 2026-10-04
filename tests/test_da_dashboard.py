@@ -1,4 +1,5 @@
 """DA dashboard integration: dedicated adapters, scope, cache and last-page reads."""
+from collections import Counter
 from dataclasses import replace
 
 import pymupdf
@@ -63,7 +64,10 @@ def sources(tmp_path, all_slabs=False):
         path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         with pymupdf.open() as doc:
-            doc.new_page()
+            # Slab fixtures are one sheet: every page is read, so a single page keeps
+            # the per-file expectations of these tests. Multi-page slabs are tested separately.
+            if not relative.startswith("DA/Dalles/"):
+                doc.new_page()
             if relative == dashboard.CLP_FILES["radier"]:
                 doc.save(path)
                 continue
@@ -144,7 +148,7 @@ def test_adapters_read_all_column_pages_and_other_last_pages(
     progress = []
     result = dashboard.run_da(str(project), progress=lambda *args: progress.append(args))
     assert len(connected_parsers) == 6 and [call[1] for call in connected_parsers if call[0] == 'colonne'] == [1, 2]
-    assert len(result.sheets) == 6 and all(s.page == 2 for s in result.sheets if s.type_element not in {'colonne', 'radier'})
+    assert len(result.sheets) == 6 and all(s.page == 2 for s in result.sheets if s.type_element not in {'colonne', 'radier', 'dalle'})
     assert all(s.status == "extracted" and s.tier == 3 for s in result.sheets)
     assert len(result.records) == 5
     assert {r.type_element for r in result.records} == set(dashboard.CLP_FILES)
@@ -189,7 +193,7 @@ def test_input_stamp_tracks_selected_files_including_removal(tmp_path):
     assert dashboard.input_stamp(str(project)) != changed
 
 
-def test_all_slab_pdfs_use_last_pages_and_keep_each_file_in_the_output(
+def test_all_slab_pdfs_read_every_sheet_and_keep_each_file_in_the_output(
         tmp_path, connected_parsers):
     project = sources(tmp_path)
     directory = project / "DA/Dalles"
@@ -202,22 +206,26 @@ def test_all_slab_pdfs_use_last_pages_and_keep_each_file_in_the_output(
             doc.save(directory / filename)
     (directory / "notes.txt").touch()
     (directory / "nested.pdf").mkdir()
+    # Each slab PDF holds one sheet per page (BAS, HAUT, intégrité, ...): all are read.
+    pages = {"CLP_DALLE NIV 3.pdf": 1, **{filename: index for index, filename in enumerate(extra, 3)}}
     result = dashboard.run_da(str(project))
     slabs = [r for r in result.records if r.type_element == "dalle"]
-    expected = {"CLP_DALLE NIV 3.pdf": 2,
-                **{filename: index for index, filename in enumerate(extra, 3)}}
-    assert {r.fichier: r.page for r in slabs} == expected
-    assert len(result.records) == 10 and result.meta["files"] == 10
-    assert len({r.id for r in result.records}) == 10
-    assert len([call for call in connected_parsers if call[0] == "dalle"]) == 6
-    assert {s.fichier: s.page for s in result.sheets if s.type_element == "dalle"} == expected
+    assert {r.fichier for r in slabs} == set(pages)
+    assert len(set(r.id for r in result.records)) == len(result.records)
+    assert result.meta["files"] == 10
+    assert Counter(call[2] for call in connected_parsers if call[0] == "dalle") == pages
+    sheets = [s for s in result.sheets if s.type_element == "dalle"]
+    assert Counter(s.fichier for s in sheets) == pages
+    assert all(sorted(s.page for s in sheets if s.fichier == name) == list(range(1, count + 1))
+               for name, count in pages.items())
     # Future uploads can provide a list; one path repeated must run only once.
     paths = dashboard.configured_inputs(str(project))["dalle"]
     uploaded = dashboard.run_da(str(project), inputs={"dalle": [*paths, paths[0]]})
-    assert len(uploaded.records) == 6 and uploaded.meta["files"] == 6
+    assert len([r for r in uploaded.records if r.type_element == "dalle"]) == len(slabs)
+    assert uploaded.meta["files"] == 6
     output = tmp_path / "all_slabs.json"
     io_json.write_records(str(output), uploaded.records)
-    assert io_json.validate_file(str(output)) == (6, [])
+    assert io_json.validate_file(str(output)) == (len(uploaded.records), [])
 
 
 def test_slab_folder_membership_invalidates_cache(tmp_path):
@@ -330,11 +338,13 @@ def test_corrupt_checkpoint_is_reparsed_and_version_change_invalidates_cache(
     checkpoint.write_bytes(b"incomplete write")
     assert len(dashboard.checkpoint_inventory(inputs, cache)) == 4
     repaired = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert repaired.meta["checkpoint_hits"] == 4 and len(connected_parsers) == 7
+    # The slab's own page checkpoint still matches the unchanged PDF, so it is reused, not re-OCRed.
+    assert repaired.meta["checkpoint_hits"] == 4 and repaired.meta["page_checkpoint_hits"] == 1
+    assert len(connected_parsers) == 6
     monkeypatch.setattr(dashboard, "PARSER_VERSION", "next-version")
     assert dashboard.checkpoint_inventory(inputs, cache) == []
     changed = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 13
+    assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 12
 
 
 def test_da_ui_uses_the_connected_parsers_and_downloads_their_records(

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from .model import ElementRecord, sort_key
 from .page import UNKNOWN_SHEET, open_document, prepare
@@ -119,6 +119,14 @@ def run_plan(plan_path: str, progress=None) -> ProjectResult:
                                       "skipped", skip_reason(p)))
             continue
         recs, diag = PARSERS[kind](p, system)
+        if kind in {"colonne", "semelle", "dalle", "radier"}:
+            from .geometry.grid import locator
+            grid = locator(p)
+            diag["comparison_grid"] = {
+                "letter_role": grid.letter_role,
+                "letters": grid.letters, "numbers": grid.numbers,
+                "lines": [asdict(line) for line in getattr(grid, "lines", [])],
+            }
         records.extend(recs)
         sheets.append(SheetReport(
             p.sheet_id, i + 1, kind, p.niveau, len(recs), diag.get("located", 0),

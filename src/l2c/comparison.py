@@ -98,6 +98,44 @@ def evidence(records):
                  x=r.x, y=r.y, debug=r.debug.model_dump(mode="json")) for r in records]
 
 
+# Labels within this many grid units on both axes are paired when they match
+# nothing exactly: G vs G.5 is 0.5 apart, 12.7 vs 13 is 0.3 apart.
+GRID_TOLERANCE = .5
+
+
+def grid_position(coordinate):
+    """(letter axis, number axis) of a label such as G.5-8 or A-12.7; None if unparsed."""
+    match = re.fullmatch(r"([A-Z])(?:\.(\d+))?-(\d+(?:\.\d+)?)", coordinate)
+    if not match:
+        return None
+    letter, fraction, number = match.groups()
+    return ord(letter) - ord("A") + (float(f"0.{fraction}") if fraction else 0), float(number)
+
+
+def nearby_pairs(plan_keys, atelier_keys):
+    """Greedy one-to-one pairing of unmatched groups that are grid-close, same type/level/layer."""
+    candidates = []
+    for plan_key in plan_keys:
+        left = grid_position(plan_key[3])
+        for atelier_key in atelier_keys:
+            if plan_key[:3] != atelier_key[:3]:
+                continue
+            right = grid_position(atelier_key[3])
+            if left is None or right is None:
+                continue
+            dx, dy = abs(left[0] - right[0]), abs(left[1] - right[1])
+            if dx <= GRID_TOLERANCE + 1e-9 and dy <= GRID_TOLERANCE + 1e-9:
+                candidates.append((dx + dy, plan_key, atelier_key))
+    pairs, used_plan, used_atelier = [], set(), set()
+    for _, plan_key, atelier_key in sorted(candidates):
+        if plan_key in used_plan or atelier_key in used_atelier:
+            continue
+        pairs.append((plan_key, atelier_key))
+        used_plan.add(plan_key)
+        used_atelier.add(atelier_key)
+    return pairs
+
+
 def compare(plan, atelier):
     from .record_formats import align_result
     align_result(plan)
@@ -107,10 +145,24 @@ def compare(plan, atelier):
         for record in dataset.records:
             mapping[group_key(record)].append(record)
     scopes = {key[:3] for key in groups[1]}
+    # Pass 1: identical labels. Pass 2: unmatched labels that are grid-close.
+    # Labels are never rewritten; each unit keeps both original labels.
+    keys = sorted(groups[0].keys() | groups[1].keys())
+    units = [(key, key) for key in keys if key in groups[0] and key in groups[1]]
+    lone_plan = [key for key in keys if key in groups[0] and key not in groups[1]]
+    lone_atelier = [key for key in keys if key in groups[1] and key not in groups[0]]
+    paired = nearby_pairs(lone_plan, lone_atelier)
+    units += paired
+    paired_plan = {plan_key for plan_key, _ in paired}
+    paired_atelier = {atelier_key for _, atelier_key in paired}
+    units += [(key, None) for key in lone_plan if key not in paired_plan]
+    units += [(None, key) for key in lone_atelier if key not in paired_atelier]
+    units.sort(key=lambda unit: unit[0] or unit[1])
     rows = []
-    for key in sorted(groups[0].keys() | groups[1].keys()):
+    for plan_key, atelier_key in units:
+        key = plan_key or atelier_key
         kind, storey, layer, coordinate = key
-        a, b = groups[0].get(key, []), groups[1].get(key, [])
+        a, b = groups[0].get(plan_key, []), groups[1].get(atelier_key, [])
         left, right = bars(a), bars(b)
         status, reason = "same", "Armatures extraites identiques."
         pairs, missing, extra = match_bars(left, right)
@@ -133,9 +185,28 @@ def compare(plan, atelier):
                                  for bar in left + right)
               or any(getattr(r.debug, "duplicate_conflict", False) or
                                  r.debug.confidence < .65 for r in a + b)):
-            status, reason = "review", "Lecture incomplète, conflit ou placement des armatures de poutre à vérifier."
+            differences = {field for i, j in pairs for field in left[i]
+                           if left[i][field] != right[j][field]}
+            if differences == {"longueur_mm"} and all(
+                    left[i]["longueur_mm"] is None or right[j]["longueur_mm"] is None
+                    for i, j in pairs if left[i]["longueur_mm"] != right[j]["longueur_mm"]):
+                reason = "Armatures compatibles ; longueurs indiquées d'un seul côté, à vérifier."
+            elif kind == "poutre":
+                reason = "Lecture incomplète, conflit ou placement des armatures de poutre à vérifier."
+            else:
+                reason = "Lecture incomplète ou conflit : vérifier les sources."
+            status = "review"
+        if plan_key and atelier_key:
+            match = "exact" if plan_key == atelier_key else "proche"
+        else:
+            match = None
+        if match == "proche":
+            reason += f" Coordonnées rapprochées appariées : plan {plan_key[3]}, DA {atelier_key[3]}."
         rows.append(dict(type_element=kind, niveau=storey, layer=layer, element=coordinate,
                          status=status, reason=reason, plan=left, atelier=right,
                          unmatched_plan=missing, unmatched_atelier=extra,
-                         plan_sources=evidence(a), atelier_sources=evidence(b)))
+                         plan_sources=evidence(a), atelier_sources=evidence(b),
+                         plan_element=plan_key[3] if plan_key else None,
+                         atelier_element=atelier_key[3] if atelier_key else None,
+                         coordinate_match=match))
     return rows

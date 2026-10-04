@@ -60,6 +60,15 @@ def test_repeated_observation_is_removed_but_independent_annotations_stay():
     assert rows[0]['status'] == "changed" and len(rows[0]['plan']) == 4
 
 
+def test_one_sided_cut_lengths_are_reviewed_with_an_explicit_reason():
+    plan = record(kind="dalle", level="NIVEAU 2", layer="intégrité", roles=["NUM", "ALP"])
+    da = plan.model_copy(update={"armature": [
+        Armature(quantite=9, diametre="25M", longueur_mm=3429)] * 2})
+    row, = compare(dataset([plan]), dataset([da]))
+    assert row['status'] == "review"
+    assert "longueurs indiquées d'un seul côté" in row['reason']
+
+
 def test_comparison_ui_uses_loaded_results_without_submitting_another_job(
         tmp_path, monkeypatch, connected_parsers, background_jobs):
     from pathlib import Path
