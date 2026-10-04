@@ -277,16 +277,18 @@ Les fichiers produits par chaque parseur et leur format sont décrits dans
 `notebooks/exploration_and_colonnes_clp_demo.ipynb` explore le corpus (quels PDF ont une
 couche texte, que contiennent les autres, les trois lecteurs essayés), puis déroule le
 pipeline complet des colonnes de CLP (plan → DA → enregistrements communs →
-comparaison → JSON) en dessinant chaque étape sur le feuillet.
+comparaison → JSON et rapport PDF) en dessinant chaque étape sur le feuillet. Il appelle
+les fonctions du projet (`run_plan`, `run_da`, `compare_with_totals`, les tableaux de
+`app/views.py`, `build_comparison_pdf`) : il n'a pas sa propre version du pipeline.
 
 ```bash
 .venv/bin/jupyter notebook notebooks/exploration_and_colonnes_clp_demo.ipynb
 ```
 
-La première fois, *Run All* prend environ 25 minutes sur un portable : l'OCR des
-colonnes du DA en prend 15 à 20. Le résultat de l'OCR est gardé dans
-`out/notebook_colonnes_clp/`, et les fois suivantes le notebook tourne en 5 minutes
-environ. Le notebook se commite **sans sorties** : ses figures sont des extraits de
+La première fois, *Run All* prend 15 à 25 minutes sur un portable : l'OCR des
+colonnes du DA en prend 10 à 20. `run_da` garde chaque page lue dans `.cache/da_jobs/`,
+comme pour le tableau de bord, et les fois suivantes le notebook tourne en 5 minutes
+environ. Les sorties vont dans `out/notebook_colonnes_clp/`. Le notebook se commite **sans sorties** : ses figures sont des extraits de
 dessins confidentiels.
 
 ### Sorties
@@ -438,10 +440,12 @@ retiré avec l'ancien écran de sélection par dossier : elle échoue.
 
 **Technique**
 
-- **Tableau de bord sous Windows.** `src/l2c/da/jobs.py` importe `fcntl`, absent de
-  Python pour Windows ; `ui.cmd` échoue donc au démarrage sur un Windows natif. La
-  ligne de commande, les parseurs DA autonomes et le notebook y fonctionnent. Utiliser
-  Linux, macOS ou WSL pour le tableau de bord.
+- **Tableau de bord sous Windows.** `src/l2c/da/jobs.py` s'importe maintenant sous
+  Windows (verrou `msvcrt` à la place de `fcntl`), ce qui permet au notebook d'appeler
+  `run_da`. Le lancement des tâches DA en arrière-plan par le tableau de bord n'a pas été
+  testé sur un Windows natif. La ligne de commande, les parseurs DA autonomes et le
+  notebook y fonctionnent. En cas de problème, utiliser Linux, macOS ou WSL pour le
+  tableau de bord.
 - La lecture OCR est lente sur processeur seul (plusieurs dizaines de minutes pour
   CLP) ; il n'y a pas d'accélération GPU.
 - Le cache des tâches DA (`.cache/da_jobs/`) contient des fichiers `pickle` : ne charger

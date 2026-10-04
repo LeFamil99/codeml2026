@@ -7,7 +7,6 @@ existing workers; navigating away never cancels or resubmits their processes.
 from __future__ import annotations
 
 import json
-import fcntl
 import os
 import pickle
 import subprocess
@@ -20,6 +19,32 @@ from pathlib import Path
 from uuid import uuid4
 from ..record_formats import align_result
 
+try:
+    import fcntl
+except ImportError:                     # Windows has no fcntl
+    fcntl = None
+    import msvcrt
+
+
+def lock_exclusive(handle) -> None:
+    """Hold the registry lock until the file is closed, on POSIX and on Windows."""
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    else:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def sync_directory(directory) -> None:
+    """Make a rename durable. Windows cannot open a directory to fsync it."""
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
 
 def write_pickle(path, value):
     """Atomic durable replacement, also safe for simultaneous cache upgrades."""
@@ -29,11 +54,7 @@ def write_pickle(path, value):
         output.flush()
         os.fsync(output.fileno())
     temporary.replace(path)
-    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(parent)
-    finally:
-        os.close(parent)
+    sync_directory(path.parent)
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -43,11 +64,7 @@ def write_json(path: Path, data: dict) -> None:
         output.flush()
         os.fsync(output.fileno())
     temporary.replace(path)
-    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(parent)
-    finally:
-        os.close(parent)
+    sync_directory(path.parent)
 
 
 def execute_job(directory: Path, runner=None) -> int:
@@ -243,7 +260,7 @@ class JobManager:
         project = str(Path(project_dir).expanduser().resolve())
         key = (project, stamp, parser_version)
         with self._lock, (self.root / ".registry.lock").open("a") as registry:
-            fcntl.flock(registry, fcntl.LOCK_EX)
+            lock_exclusive(registry)
             self._recover()
             active = self._active.get(project)
             # Even regeneration or source changes must not duplicate an active run.
@@ -282,7 +299,7 @@ class JobManager:
     def clear_completed(self) -> None:
         """Clear results without cancelling work that is still running."""
         with self._lock, (self.root / ".registry.lock").open("a") as registry:
-            fcntl.flock(registry, fcntl.LOCK_EX)
+            lock_exclusive(registry)
             self._recover()
             for job in self._jobs.values():
                 if not job.running:
