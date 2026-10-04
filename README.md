@@ -101,11 +101,11 @@ still need review; this parser is standalone and not yet wired into the dashboar
 
 ```
 PROJECT  SHEETS  RECORDS  radier semelle poutre mur_refend colonne dalle  UNITS
-CLP          18     2027      74      75    177         80     395  1226  imperial
-WP2          33     3659      31     124    244        134     912  2214  metric
-LIGREP       26     2585       —     112    218        108     677  1470  metric
-EspCa3B      45     2276      54      20    183        241     644  1134  metric
-                   10547
+CLP          18     2468      77      75    187        119     395  1615  imperial
+WP2          33     4681      35     124    283        212     912  3115  metric
+LIGREP       26     3562      30     112    240        174     677  2329  metric
+EspCa3B      45     2806      54      20    212        369     644  1507  metric
+                   13517
 ```
 
 `SHEETS` = sheets with element reinforcement; the rest (typical details, general
@@ -159,9 +159,15 @@ pipeline is fully local — no cloud services and no external AI APIs at runtime
   geometry checks, not by labelled truth.
 - Slab (`dalle`) callouts are located at their own position; a callout placed between
   two columns resolves to the nearer one (confidence reflects the distance).
-- Beams: a few titled beams have no callout found (WP2 7, LIGREP 14, EspCa3B 3 — some
-  are `POUTRE SUPPRIMÉ`); listed per sheet in the Diagnostics tab.
+- Walls: LIGREP S-400 and S-401 both title their views A, B, C, so a wall element
+  (`élévation A - RDC @ 2`) is unique only together with its sheet.
+- Legend and detail tables (épingle spacing tables, `ARM. ADD.` shear-reinforcement
+  details, the pilaster detail beside the foundations plan) are not attached to a grid
+  location and are not extracted.
 - Radier layer in WP2/EspCa3B is inferred from each view's direction legend
   (`RANG 1 & 4` / `RANG 2 & 3`), at reduced confidence.
-- 5 CLP column callouts have no dimension-matching symbol; they fall back to the
-  callout position with reduced confidence.
+- Column callouts with no dimension-matching symbol within 100 pt (CLP 3, WP2 11 — the
+  WP2 ones are columns drawn inside a wall) are placed from the callout position, using
+  the sheet's usual callout-to-column offset when it is consistent, at reduced confidence.
+- A few columns share a locator: no labelled grid line passes through the second one
+  (WP2 S-512 `T.1-34..37`), or two columns stand at one intersection (EspCa3B `B-2`).

@@ -5,6 +5,9 @@ Callout shape, identical in all four projects (PLAN SS5.6):
     ARM.: 4-25M         <- vertical bars: quantity-designator
     LIG.: 10M@6" c/c    <- ties: designator@spacing
     BETON: 25MPa / N
+Variants met on the corpus: a round section (``COL. 500mmØ``), a size split by its
+fraction (``16`` + ``1/4"x21"``), and labels / values split into several tokens on some
+WP2 sheets (``ARM.`` ``:`` ``4-20M``, ``LIG.`` ``:`` ``10M`` ``@100``).
 """
 
 from __future__ import annotations
@@ -23,6 +26,42 @@ from ._assoc import UNREACHABLE, assign, runner_up_ratio
 
 _ARM = re.compile(r"^(\d+)-(\d{2}M)$")
 _LIG = re.compile(r"^(\d{2}M)@")
+#: a callout sits beside its column: measured edge distance is <= 88 pt on every true
+#: pair of the four projects. Without a limit, one callout whose symbol is missing takes
+#: its neighbour's and shifts the whole bay (WP2 S-501: 19 pairs 113-425 pt apart).
+_REACH = 100.0
+_ARM_IN = re.compile(r"\b\d+-\d{2}M\b")
+_LIG_IN = re.compile(r"\b\d{2}M@\S+")
+
+
+def _dim_text(vals: list[str]) -> str | None:
+    """The stated size among the tokens after ``COL.``; a mixed fraction splits it in
+    two (``16`` ``1/4"x21"``), so runs of 2-3 tokens are tried too."""
+    for n in (1, 2, 3):
+        for i in range(len(vals) - n + 1):
+            text = " ".join(vals[i:i + n])
+            if parse_dimensions(text):
+                return text
+    return None
+
+
+def _typical_offset(offsets: list[tuple[float, float]], tol: float = 8.0,
+                    share: float = 0.7) -> tuple[float, float] | None:
+    """Median callout-centre -> symbol-centre offset, only when the sheet agrees on it:
+    at least `share` of the pairs within `tol` pt of the median (else None)."""
+    if len(offsets) < 10:
+        return None
+    mx = float(np.median([o[0] for o in offsets]))
+    my = float(np.median([o[1] for o in offsets]))
+    close = sum(abs(o[0] - mx) <= tol and abs(o[1] - my) <= tol for o in offsets)
+    return (round(mx, 1), round(my, 1)) if close >= share * len(offsets) else None
+
+
+def _split_value(vals: list, pattern: re.Pattern) -> str | None:
+    """A value written as several tokens (``:`` ``10M`` ``@100``), glued back."""
+    text = re.sub(r"\s*@\s*", "@", " ".join(w.text for w in vals))
+    m = pattern.search(text)
+    return m.group(0) if m else None
 
 
 def _same_column_block(page: PreparedPage, anchor, span: float = 32.0):
@@ -68,17 +107,19 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
     for a in anchors:
         labels = _same_column_block(page, a)
         members = list(labels) + _tokens_right_of(page, a)
-        dim_txt = next((t for t in _value_right_of(page, a) if parse_dimensions(t)), None)
+        dim_txt = _dim_text(_value_right_of(page, a))
         arm = lig = None
         for t in labels:
-            if t.text == "ARM.:":
+            if t.text in ("ARM.:", "ARM."):
                 vals = _tokens_right_of(page, t)
                 members += vals
-                arm = next((w.text for w in vals if _ARM.match(w.text)), None)
-            elif t.text == "LIG.:":
+                arm = (next((w.text for w in vals if _ARM.match(w.text)), None)
+                       or _split_value(vals, _ARM_IN))
+            elif t.text in ("LIG.:", "LIG."):
                 vals = _tokens_right_of(page, t)
                 members += vals
-                lig = next((w.text for w in vals if _LIG.match(w.text)), None)
+                lig = (next((w.text for w in vals if _LIG.match(w.text)), None)
+                       or _split_value(vals, _LIG_IN))
         if not (dim_txt or arm or lig):
             continue      # "℄ COL." on a dimension string (WP2 floor plans): no reinforcement
         xs = [w.x0 for w in members] + [w.x1 for w in members]
@@ -95,7 +136,9 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
 
     # ---- 2. detect symbols and self-calibrate the drawing scale against stated sizes
     symbols = candidate_symbols(page)
-    scale = calibrate_scale(symbols, [b["dims"] for b in blocks if b["dims"]])
+    # a disc's bounding box is square: it would calibrate against every square symbol
+    scale = calibrate_scale(symbols, [b["dims"] for b in blocks
+                                      if b["dims"] and "Ø" not in b["dim_txt"]])
     diag["scale_pt_per_mm"] = scale
     diag["scale_pt_per_inch"] = round(scale * 25.4, 4) if scale else None
     diag["symbols"] = len(symbols)
@@ -110,13 +153,23 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
                 continue
             for j, sym in enumerate(symbols):
                 if matches_dimensions(sym, b["dims"], scale):
-                    costs[i, j] = sym.rect_distance(*b["bbox"])
+                    d = sym.rect_distance(*b["bbox"])
+                    if d <= _REACH:
+                        costs[i, j] = d
     pairing = assign(costs)
     diag["assigned"] = len(pairing)
     if len(pairing) < len(blocks):
         diag["warnings"].append(
-            f"{len(blocks) - len(pairing)} callouts had no dimension-matching symbol"
+            f"{len(blocks) - len(pairing)} callouts had no dimension-matching symbol in reach"
         )
+
+    # a callout left without a symbol (its column is drawn inside a wall, WP2 S-501 line
+    # 24.1) still hangs off its column the way the sheet's other callouts do: when that
+    # offset is the same across the sheet, it places the column better than the text does
+    offset = _typical_offset([(symbols[j].cx - (blocks[i]["bbox"][0] + blocks[i]["bbox"][2]) / 2,
+                               symbols[j].cy - (blocks[i]["bbox"][1] + blocks[i]["bbox"][3]) / 2)
+                              for i, j in pairing.items()])
+    diag["typical_offset"] = offset
 
     # ---- 4. build records
     records: list[ElementRecord] = []
@@ -128,8 +181,10 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
             sx, sy = sym.cx, sym.cy
             assoc_cost = runner_up_ratio(costs, i, pairing[i])
             locator_kind = "grid"
+            reach = round(float(costs[i, pairing[i]]), 1)
         else:
-            sx, sy, assoc_cost, locator_kind = cx, cy, 1.0, "unknown"
+            sx, sy = (cx + offset[0], cy + offset[1]) if offset else (cx, cy)
+            assoc_cost, locator_kind, reach = 1.0, "unknown", None
 
         element, grid_cost = grid.locate(sx, sy)
         bars: list[Armature] = []
@@ -159,6 +214,7 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
                 locator_kind=locator_kind if element else "unknown",
                 niveau=page.niveau,
                 symbol_bbox=(sx, sy, sx, sy),
+                assoc_distance=reach,
             ),
         ))
 

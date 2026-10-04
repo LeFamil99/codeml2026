@@ -16,24 +16,24 @@ from conftest import PROJECTS, plan_path
 from l2c import io_json
 from l2c.pipeline import run_plan
 
-#: measured on the whole plan set (2026-10-03); floors sit ~5% under the measurement
+#: measured on the whole plan set (2026-10-04); floors sit ~5% under the measurement
 EXPECTED = {
-    "CLP":     {"min_records": 1925, "min_located_pct": 99.0, "units": "imperial"},
-    "WP2":     {"min_records": 3475, "min_located_pct": 99.0, "units": "metric"},
-    "LIGREP":  {"min_records": 2455, "min_located_pct": 95.0, "units": "metric"},
-    "EspCa3B": {"min_records": 2160, "min_located_pct": 99.0, "units": "metric"},
+    "CLP":     {"min_records": 2350, "min_located_pct": 99.0, "units": "imperial"},
+    "WP2":     {"min_records": 4445, "min_located_pct": 99.0, "units": "metric"},
+    "LIGREP":  {"min_records": 3380, "min_located_pct": 95.0, "units": "metric"},
+    "EspCa3B": {"min_records": 2665, "min_located_pct": 99.0, "units": "metric"},
 }
 
 #: per-type record counts measured on the whole plan set (radier: LIGREP's are on S-100)
 MEASURED_BY_TYPE = {
-    "CLP":     {"radier": 74, "semelle": 75, "poutre": 177, "mur_refend": 80,
-                "colonne": 395, "dalle": 1226},
-    "WP2":     {"radier": 31, "semelle": 124, "poutre": 244, "mur_refend": 134,
-                "colonne": 912, "dalle": 2214},
-    "LIGREP":  {"radier": 30, "semelle": 112, "poutre": 218, "mur_refend": 108,
-                "colonne": 677, "dalle": 1470},
-    "EspCa3B": {"radier": 54, "semelle": 20, "poutre": 183, "mur_refend": 241,
-                "colonne": 644, "dalle": 1134},
+    "CLP":     {"radier": 77, "semelle": 75, "poutre": 187, "mur_refend": 119,
+                "colonne": 395, "dalle": 1615},
+    "WP2":     {"radier": 35, "semelle": 124, "poutre": 283, "mur_refend": 212,
+                "colonne": 912, "dalle": 3115},
+    "LIGREP":  {"radier": 30, "semelle": 112, "poutre": 240, "mur_refend": 174,
+                "colonne": 677, "dalle": 2329},
+    "EspCa3B": {"radier": 54, "semelle": 20, "poutre": 212, "mur_refend": 369,
+                "colonne": 644, "dalle": 1507},
 }
 
 
@@ -138,6 +138,100 @@ def test_radiers_drawn_on_the_foundations_plan_are_read(results):
     layered = [r for r in rad if r.debug.layer]
     assert len(layered) == 8 and {r.debug.layer for r in layered} == {"1", "2"}
     assert sum(r.type_element == "semelle" for r in results["LIGREP"].records) == 112
+
+
+@pytest.mark.parametrize("project", PROJECTS)
+def test_every_titled_beam_has_reinforcement(results, project):
+    """Beam rows run into the title-block corner (CLP P112, WP2 P114 / P302 / P054):
+    those beams used to come out with no record at all."""
+    bare = [w for s in results[project].sheets if s.type_element == "poutre"
+            for w in s.diagnostics.get("warnings", []) if "no bar callout" in w]
+    assert not bare, bare
+
+
+@pytest.mark.parametrize("project", PROJECTS)
+def test_wall_web_steel_is_read(results, project):
+    """Each storey panel's distributed steel (``H.:15M@9"`` over ``V.:10M@8"``) is a
+    record of the same élévation / storey element as the panel's boundary zones."""
+    walls = [r for r in results[project].records if r.type_element == "mur_refend"]
+    web = [r for r in walls if getattr(r.debug, "role", None) == "âme"]
+    assert len(web) >= 0.25 * len(walls), f"{project}: {len(web)} web of {len(walls)}"
+    assert all(r.element != "UNKNOWN" for r in web)
+    assert all(len(r.armature) == 2 for r in web if len(r.debug.raw) == 2)
+    boundary = {(r.feuillet, r.element.split(" - ")[0]) for r in walls if r not in web}
+    assert {(r.feuillet, r.element.split(" - ")[0]) for r in web} <= boundary
+
+
+def test_wall_callouts_follow_the_drawn_wall_not_the_nearest_title(results):
+    """WP2 S-400: view B's right-end callouts sit closer to title C; the drawn wall
+    extent (682-1270 pt) settles it."""
+    b = [r for r in results["WP2"].records
+         if r.feuillet == "S-400" and r.element.startswith("élévation B ")]
+    assert any(1290 < r.x < 1330 for r in b)
+    assert not any(1290 < r.x < 1330 for r in results["WP2"].records
+                   if r.feuillet == "S-400" and r.element.startswith("élévation C "))
+
+
+def test_views_reaching_the_right_margin_are_read(results):
+    """The plan can run past the notes-column cut: WP2's RADIER #6 view (grid X) and
+    LIGREP's east wing, whose grid lines are numbered 16E / 16.9E / 17.9E."""
+    wp2 = [r for r in results["WP2"].records if r.type_element == "radier"]
+    assert any(r.element.startswith("X-") for r in wp2)
+    east = {"16E", "16.9E", "17.9E"}
+    for kind in ("colonne", "dalle"):
+        got = {r.element.rsplit("-", 1)[-1] for r in results["LIGREP"].records
+               if r.type_element == kind}
+        assert east <= got, f"LIGREP {kind}: {east - got} never used as a locator"
+
+
+def test_wall_web_pairs_list_horizontal_bars_first(results):
+    """CLP S-400 view C writes ``V.:`` over ``H.:``; the pair is still one record, H first."""
+    web = [r for r in results["CLP"].records if r.feuillet == "S-400"
+           and r.element.startswith("élévation C ") and getattr(r.debug, "role", None) == "âme"]
+    assert len(web) == 7
+    assert all(r.debug.raw[0].startswith("H.") and len(r.armature) == 2 for r in web)
+    assert all("_âme" in r.id for r in web)
+
+
+@pytest.mark.parametrize("project", PROJECTS)
+def test_no_grid_line_is_named_after_a_bar_size(results, project):
+    """``16E`` is a grid label (LIGREP's east wing); ``15M`` beside a line end is not."""
+    import re
+    bad = {r.element for r in results[project].records
+           if r.type_element != "mur_refend" and re.search(r"\d{2}M\b", r.element)}
+    assert not bad, bad
+
+
+def test_two_line_footing_schedule_cell_is_read(results):
+    """WP2 TYPE D: ``10-20M`` over ``+ ÉP. 15M@300`` in both ARM. columns."""
+    d = [r for r in results["WP2"].records
+         if r.type_element == "semelle" and r.debug.raw[0] == "TYPE D"]
+    assert d
+    for r in d:
+        assert [(a.quantite, a.diametre, a.espacement_mm) for a in r.armature] == [
+            (10, "20M", None), (None, "15M", 300.0), (10, "20M", None), (None, "15M", 300.0)]
+    assert not [r.id for p in PROJECTS for r in results[p].records
+                if r.type_element == "semelle" and not r.armature]
+
+
+@pytest.mark.parametrize("project", PROJECTS)
+def test_a_column_callout_is_never_paired_with_a_far_symbol(results, project):
+    """Every true pair on the corpus is under 90 pt apart; WP2 S-501 used to shift a whole
+    bay by one row (19 pairs 113-425 pt apart) because one row's symbols are in a wall."""
+    far = [(r.feuillet, r.element, r.debug.assoc_distance) for r in results[project].records
+           if r.type_element == "colonne" and (r.debug.assoc_distance or 0) > 100]
+    assert not far, far
+
+
+def test_column_callout_variants_are_read(results):
+    """Round sections (``COL. 500mmØ``) find their disc; split tokens (``LIG.`` ``:``
+    ``10M`` ``@100``) still give bars and ties."""
+    for p in ("LIGREP", "EspCa3B"):
+        rnd = [r for r in results[p].records
+               if r.type_element == "colonne" and r.debug.raw[0].endswith("Ø")]
+        assert rnd and all(r.debug.locator_kind == "grid" for r in rnd), p
+    wp2 = [r for r in results["WP2"].records if r.type_element == "colonne"]
+    assert all(len(r.armature) == 2 for r in wp2)
 
 
 @pytest.mark.parametrize("project", PROJECTS)

@@ -46,8 +46,16 @@ def extract(page: PreparedPage, system: UnitSystem,
     diag = {"source": grid.evidence.get("source"), "letter_role": grid.letter_role,
             "warnings": []}
     labels = marks(page) if on_foundations else []
+    def in_view(l) -> bool:
+        # an enlarged view can reach the right margin (WP2 RADIER #6, CLP G-11); the
+        # legend tables that also live there are outside every drawn grid (15 pt slack)
+        if grid.evidence.get("source") != "grid_lines":
+            return False
+        element, cost = grid.locate(l.cx, l.cy, margin=15.0)
+        return element is not None and cost < 1.0
+
     body = [l for l in page.lines
-            if (on_foundations or l.x0 < 0.82 * page.width)
+            if (on_foundations or l.x0 < 0.82 * page.width or in_view(l))
             and not (l.x0 > 0.60 * page.width and l.y0 > 0.78 * page.height)
             and not l.text.lstrip().startswith("-")]
     layers = [(l, _LAYER.match(l.text.strip()).group(1)) for l in body if _LAYER.match(l.text.strip())]

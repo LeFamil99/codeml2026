@@ -3,6 +3,7 @@
 Measured on all four projects: rows of beam elevations, each titled UNDER it by its mark
 and section (``P108 -  16" x 40 3/8"``, ``P-100: 600x1130``), with bar callouts above:
     2-20M  /  3 - 35M  /  LIT 1: 5-35M         longitudinal bars
+    1er LIT: 4 - 35M  /  2e LIT 2-30M  /  RANG 1 : 3-35M    the same, by layer
     10M @ 18'' c/c  /  15M@375 c/c             stirrups by zone (``ℓ/3`` markers)
     ARM. DE PEAU 15M@8" CH. FACE               skin bars
 The element is the beam mark; each callout is a record (Appendix A: one identified
@@ -20,7 +21,9 @@ from ..units import BAR_DESIGNATORS, UnitSystem, parse_spacing
 from .walls import assign_views
 
 _TITLE = re.compile(r"^(P-?\d{2,4}[A-Z]?)\s*[-:]\s*(.+)$")
-_COUNT = re.compile(r"^(?:LIT\s*(?P<lit>\d)\s*:\s*)?(?P<q>\d+)\s*-\s*(?P<size>\d{2})\s*M\b\s*(?P<rest>.*)$")
+_COUNT = re.compile(
+    r"^(?:(?:LIT|RANG)\s*(?P<lit>\d)\s*:\s*|(?P<ord>\d)\s*(?:ER|E)\s+LIT\s*:?\s*)?"
+    r"(?P<q>\d+)\s*-\s*(?P<size>\d{2})\s*M\b\s*(?P<rest>.*)$", re.IGNORECASE)
 _SPACED = re.compile(r"^(?P<skin>ARM\.?\s*DE\s*PEAU\s*)?(?P<size>\d{2})\s*M\s*@\s*(?P<sp>.+)$")
 _STIRRUP_N = re.compile(r"^(?P<q>\d+)\s*[ÉE]TRIERS?\s*(?P<size>\d{2})\s*M\b(?P<rest>.*)$")
 
@@ -63,29 +66,30 @@ def _spans(page: PreparedPage, titles):
     return out
 
 
+def _inside(titles, spans, x, y):
+    """The beam whose drawn span contains (x, y); row = nearest title row below it."""
+    below = [t for t in titles if t[2] > y - 5]
+    if not below:
+        return None
+    row_y = min(t[2] for t in below)
+    row = [t for t in below if abs(t[2] - row_y) < 60 and t[0] in spans]
+    inside = [t for t in row if spans[t[0]][0] - 25 <= x <= spans[t[0]][1] + 25]
+    if not inside:
+        return None
+    return min(inside, key=lambda t: abs((spans[t[0]][0] + spans[t[0]][1]) / 2 - x))[0]
+
+
 def _owners(titles, spans, centres):
-    """Beam span containing the callout (row = nearest title row below it); the contiguous
-    -group assignment is the fallback for beams whose outline was not found."""
+    """Beam span containing the callout; the contiguous-group assignment is the fallback
+    for beams whose outline was not found."""
     fallback = assign_views(titles, centres, merge=0.0)
-    out = []
-    for (x, y), fb in zip(centres, fallback):
-        below = [t for t in titles if t[2] > y - 5]
-        if not below:
-            out.append(fb)
-            continue
-        row_y = min(t[2] for t in below)
-        row = [t for t in below if abs(t[2] - row_y) < 60 and t[0] in spans]
-        inside = [t for t in row if spans[t[0]][0] - 25 <= x <= spans[t[0]][1] + 25]
-        if inside:
-            out.append(min(inside, key=lambda t: abs((spans[t[0]][0] + spans[t[0]][1]) / 2 - x))[0])
-        else:
-            out.append(fb)
-    return out
+    return [_inside(titles, spans, x, y) or fb for (x, y), fb in zip(centres, fallback)]
 
 
 def _parse(text: str, system: UnitSystem):
     if (m := _COUNT.match(text)) and f"{m.group('size')}M" in BAR_DESIGNATORS:
-        role = f"lit {m.group('lit')}" if m.group("lit") else "longitudinale"
+        lit = m.group("lit") or m.group("ord")
+        role = f"lit {lit}" if lit else "longitudinale"
         return Armature(quantite=int(m.group("q")), diametre=f"{m.group('size')}M"), role
     if (m := _STIRRUP_N.match(text)) and f"{m.group('size')}M" in BAR_DESIGNATORS:
         return Armature(quantite=int(m.group("q")), diametre=f"{m.group('size')}M"), "étriers"
@@ -102,17 +106,20 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
         diag["warnings"].append("no beam titles (P### - section) found")
     sections = {t[0]: t[3] for t in titles}
 
-    callouts = []
-    for l in page.lines:
-        if l.x0 > 0.82 * page.width or (l.x0 > 0.60 * page.width and l.y0 > 0.78 * page.height):
-            continue
-        text = re.sub(r"\s+", " ", l.text.strip())
-        bar, role = _parse(text, system)
-        if bar:
-            callouts.append((l, text, bar, role))
     tri = [(t[0], t[1], t[2]) for t in titles]
     spans = _spans(page, tri)
     diag["spans_found"] = len(spans)
+    callouts = []
+    for l in page.lines:
+        # beam rows run into the legend / title-block corner (CLP P112, WP2 P114, P302):
+        # there a callout counts only when it sits over a drawn beam
+        margin = l.x0 > 0.82 * page.width or (l.x0 > 0.60 * page.width and l.y0 > 0.78 * page.height)
+        if margin and not _inside(tri, spans, l.cx, l.cy):
+            continue
+        text = re.sub(r"\s+", " ", l.text.strip()).lstrip("_")
+        bar, role = _parse(text, system)
+        if bar:
+            callouts.append((l, text, bar, role))
     owners = _owners(tri, spans, [(l.cx, l.cy) for l, *_ in callouts])
 
     records: list[ElementRecord] = []

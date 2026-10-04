@@ -21,7 +21,9 @@ from dataclasses import dataclass, field
 from ..page import PreparedPage
 
 _LETTER = re.compile(r"^[A-Z]{1,2}(\.\d{1,2})?'?$")
-_NUMBER = re.compile(r"^\d{1,2}(\.\d{1,2})?$")      # "10'" is a dimension fragment
+# "10'" is a dimension fragment; LIGREP's east wing numbers its lines 16E, 16.9E, 17.9E
+# (a wing suffix, never M: "15M" beside a line end is a bar size, not a label)
+_NUMBER = re.compile(r"^\d{1,2}(\.\d{1,2})?[A-LN-Z]?$")
 
 
 @dataclass(frozen=True)
