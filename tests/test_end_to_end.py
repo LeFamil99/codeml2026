@@ -24,13 +24,13 @@ EXPECTED = {
     "EspCa3B": {"min_records": 2160, "min_located_pct": 99.0, "units": "metric"},
 }
 
-#: per-type record counts measured on the whole plan set (radier: LIGREP has none)
+#: per-type record counts measured on the whole plan set (radier: LIGREP's are on S-100)
 MEASURED_BY_TYPE = {
     "CLP":     {"radier": 74, "semelle": 75, "poutre": 177, "mur_refend": 80,
                 "colonne": 395, "dalle": 1226},
     "WP2":     {"radier": 31, "semelle": 124, "poutre": 244, "mur_refend": 134,
                 "colonne": 912, "dalle": 2214},
-    "LIGREP":  {"semelle": 112, "poutre": 218, "mur_refend": 108,
+    "LIGREP":  {"radier": 30, "semelle": 112, "poutre": 218, "mur_refend": 108,
                 "colonne": 677, "dalle": 1470},
     "EspCa3B": {"radier": 54, "semelle": 20, "poutre": 183, "mur_refend": 241,
                 "colonne": 644, "dalle": 1134},
@@ -125,6 +125,19 @@ def test_the_35M_outlier_is_unique_on_its_sheet(results):
     sizes = [a.diametre for r in s502 for a in r.armature if a.quantite]
     assert sizes.count("35M") == 1
     assert sizes.count("25M") > 50
+
+
+def test_radiers_drawn_on_the_foundations_plan_are_read(results):
+    """LIGREP has no S-050: its six mats are on S-100 "PLAN DES FONDATIONS", beside the
+    isolated footings. Both are read, the footing schedule rows (``15-25M``) are not
+    mistaken for mat bars, and the ordinal layer (``1E RANG``) is kept."""
+    rad = [r for r in results["LIGREP"].records if r.type_element == "radier"]
+    assert {r.feuillet for r in rad} == {"S-100"}
+    assert {r.debug.radier for r in rad} == {f"RADIER #{n}" for n in range(1, 7)}
+    assert all(r.element != "UNKNOWN" and r.armature[0].espacement_mm for r in rad)
+    layered = [r for r in rad if r.debug.layer]
+    assert len(layered) == 8 and {r.debug.layer for r in layered} == {"1", "2"}
+    assert sum(r.type_element == "semelle" for r in results["LIGREP"].records) == 112
 
 
 @pytest.mark.parametrize("project", PROJECTS)

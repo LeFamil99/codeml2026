@@ -5,6 +5,8 @@ Every sheet is classified from its title (page.py) and sent to its type's parser
     S-500 colonne      S-600 dalle
 Sheets that carry no element reinforcement (typical details, general-arrangement
 plans) are reported as `skipped` WITH the reason, never silently dropped.
+A project without a radier sheet (LIGREP) draws its mats on the foundations plan; that
+sheet is then read twice, and reported twice: once as semelle, once as radier.
 Shop-drawing reading, matching and comparison are later stages.
 """
 
@@ -69,8 +71,10 @@ class ProjectResult:
     @property
     def totals(self) -> dict:
         return {
-            "sheets": len(self.sheets),
-            "sheets_extracted": sum(1 for s in self.sheets if s.status == "extracted"),
+            # a foundations sheet read as semelle AND radier is still one sheet
+            "sheets": len({(s.fichier, s.page) for s in self.sheets}),
+            "sheets_extracted": len({(s.fichier, s.page) for s in self.sheets
+                                     if s.status == "extracted"}),
             "sheets_skipped": sum(1 for s in self.sheets if s.status == "skipped"),
             "elements": len(self.records),
             "located": sum(1 for r in self.records if r.element != "UNKNOWN"),
@@ -121,6 +125,14 @@ def run_plan(plan_path: str, progress=None) -> ProjectResult:
             "extracted" if recs else "no_callouts",
             None if recs else f"aucune annotation d'armature reconnue ({kind})", diag,
         ))
+        if kind == "semelle" and radier.marks(p):
+            recs, diag = radier.extract(p, system, on_foundations=True)
+            records.extend(recs)
+            sheets.append(SheetReport(
+                p.sheet_id, i + 1, "radier", p.niveau, len(recs), diag.get("located", 0),
+                "extracted" if recs else "no_callouts",
+                None if recs else "aucune annotation d'armature reconnue (radier)", diag,
+            ))
 
     records.sort(key=sort_key)
     # ids must be unique project-wide; two callouts on one grid cell (a column's two
