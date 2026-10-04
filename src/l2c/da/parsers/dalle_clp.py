@@ -29,7 +29,7 @@ from l2c.da.common import parse_bar_line
 from l2c.da.imageread import PageImage, TextLine, remove_rules, _join
 from l2c.da.parsers import colonne_clp as ocr
 from l2c.model import Debug, ElementRecord
-from l2c.units import BAR_DESIGNATORS, parse_spacing
+from l2c.units import BAR_DESIGNATORS
 from l2c.da.parsers.output import (
     deduplicate, reinforcement_key, view_correspondences, grid_identity, grid_quality,
 )
@@ -41,7 +41,6 @@ DEFAULT_FILE = os.path.expanduser(
 LETTER = re.compile(r"^[A-Z]{1,2}(?:\.\d{1,2})?'?$")
 NUMBER = re.compile(r"^\d{1,2}(?:\.\d{1,2})?$")
 MARK = re.compile(r"\d{2}[A-Z]+\d[0-9A-Z]*(?:[-/][0-9A-Z]+)*")
-SPACING = re.compile(r'^@\s*\d+(?:\s+\d/\d)?\s*(?:"|mm)?\s*$')
 
 
 def fold(text: str) -> str:
@@ -452,9 +451,30 @@ def associate(lines: list[TextLine], target: Support, neighbours: list[Support])
     return out
 
 
+def pair_unnamed_callouts(layer, bars, lines):
+    """Slabs always carry one NUM and one ALP callout per support. HAUT/BAS callouts are
+    printed without the label, so a support with exactly two unnamed callouts takes NUM for
+    the first in reading order and ALP for the second. The order is assumed, not read, and
+    is marked as inferred; supports with one or three callouts stay unnamed."""
+    if layer not in ("haut", "bas") or len(bars) != 2 or any(b["label"] for b in bars):
+        return bars
+    position = {l.text: (l.cy, l.cx) for l in lines}
+    for bar, label in zip(sorted(bars, key=lambda b: position.get(b["raw"], (0, 0))), ("NUM", "ALP")):
+        bar["label"] = label
+        bar["role_inferred"] = True
+    return bars
+
+
+# Slab opening details ("OUVERTURE, DÉTAIL-041/S003: NUM: 1 15M 10-06 H&B (2 requis)") print
+# their own bars next to the grid. They are not intégrité steel, so those callout lines are skipped.
+OPENING_DETAIL = re.compile(r"H\s*[&8]\s*B\b|HGB|REQUIS|QRT|OUVERTURE|D[ÉE]TAIL", re.I)
+
+
 def parse_lines(lines: list[TextLine], system: str = "imperial") -> list[dict]:
     bars = []
     for l in lines:
+        if OPENING_DETAIL.search(l.text):
+            continue
         text = re.sub(r"^[-_|]+\s*(?=(?:NUM|ALP)\b)", "", l.text, flags=re.I)
         text = re.sub(r"\b(NUM|ALP)[.:]\s*(?=\d)", r"\1: ", text, flags=re.I)
         text = re.sub(r"(?<!\S)(\d+)\.\s+(?=(?:10|15|20|25|30|35|45|55)M\b)", r"\1 ", text)
@@ -476,23 +496,12 @@ def parse_lines(lines: list[TextLine], system: str = "imperial") -> list[dict]:
                 issue = f"unread length or fabrication mark: {mark}"
             elif mark is None and b.armature.longueur_mm is None and issue is None:
                 issue = "length or fabrication mark unread"
-            bars.append({"label": b.label, **b.armature.model_dump(), "raw": l.text,
+            # Slab callouts are always count-diameter (4-15, 3-15, 2-15): never a spacing.
+            bars.append({"label": b.label, **b.armature.model_dump(), "espacement_mm": None, "raw": l.text,
                          "formatted": f"{b.armature.quantite}-{b.armature.diametre}",
                          "bbox": tuple(l.rect), "confidence": l.confidence,
                          "size_from_mark": b.size_from_mark, "vertical": l.vertical,
                          "issue": issue})
-    for l in lines:
-        if not SPACING.fullmatch(l.text.strip()):
-            continue
-        eligible = [b for b in bars if b["espacement_mm"] is None and b["vertical"] == l.vertical]
-        if eligible:
-            b = min(eligible, key=lambda b: math.hypot(center(pymupdf.Rect(b["bbox"]))[0] - l.cx,
-                                                     center(pymupdf.Rect(b["bbox"]))[1] - l.cy))
-            bx, by = center(pymupdf.Rect(b["bbox"]))
-            if math.hypot(bx - l.cx, by - l.cy) < 25:
-                b["espacement_mm"] = parse_spacing(l.text, system)
-                b["confidence"] = min(b["confidence"], l.confidence)
-                b["raw"] += " " + l.text
     return bars
 
 
@@ -639,6 +648,7 @@ def parse_page(page: pymupdf.Page, filename: str = "", coordinates: list[str] | 
             quality = lambda bs: (sum(not b["issue"] for b in bs), len(bs))
             if quality(retry_bars) > quality(bars):
                 lines, bars = retry, retry_bars
+        bars = pair_unnamed_callouts(layer, bars, lines)
         s.lines = [l.text for l in lines]
         s.text_boxes = [{"text": l.text, "bbox": tuple(l.rect), "confidence": l.confidence,
                          "vertical": l.vertical} for l in lines]
@@ -703,7 +713,8 @@ def records(result: PageResult, filename: str) -> list[ElementRecord]:
             armature=[{k: b[k] for k in ("repere", "diametre", "quantite", "espacement_mm", "longueur_mm")} for b in s.bars],
             debug=Debug(raw=s.lines, confidence=s.confidence, decode_path="ocr", tier=1,
                         locator_kind="grid", niveau=s.level, symbol_bbox=s.symbol_bbox,
-                        layer=s.layer, roles=[b["label"] for b in s.bars], view=s.view,
+                        layer=s.layer, roles=[b["label"] for b in s.bars],
+                        roles_inferred=[bool(b.get("role_inferred")) for b in s.bars], view=s.view,
                         crop_bbox=s.crop_bbox, text_boxes=s.text_boxes,
                         duplicate_conflict=s.duplicate_conflict)))
     return out

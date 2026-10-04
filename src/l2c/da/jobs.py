@@ -78,8 +78,8 @@ def execute_job(directory: Path, runner=None) -> int:
 
     try:
         if runner is None:
-            from .dashboard import run_da
-            runner = run_da
+            from .methods import get
+            runner = get(request.get("method", "clp")).runner
         options = {}
         if request.get("checkpoint_dir"):
             options.update(checkpoint_dir=request["checkpoint_dir"],
@@ -239,7 +239,7 @@ class JobManager:
             return self._jobs.get(key)
 
     def ensure(self, project_dir: str, stamp: tuple, parser_version: str,
-               inputs, force=False, reparse=False) -> Job:
+               inputs, force=False, reparse=False, method: str = "clp") -> Job:
         project = str(Path(project_dir).expanduser().resolve())
         key = (project, stamp, parser_version)
         with self._lock, (self.root / ".registry.lock").open("a") as registry:
@@ -262,7 +262,7 @@ class JobManager:
                 selected.setdefault(kind, []).append(str(path.resolve()))
             directory = self.root / uuid4().hex
             directory.mkdir(mode=0o700)
-            write_json(directory / "request.json", {"project_dir": project,
+            write_json(directory / "request.json", {"project_dir": project, "method": method,
                        "inputs": selected, "parser_version": parser_version, "stamp": stamp,
                        "checkpoint_dir": str(self.root.resolve() / "file_results"),
                        "reuse_checkpoints": reuse_checkpoints})

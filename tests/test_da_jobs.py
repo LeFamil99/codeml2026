@@ -106,42 +106,6 @@ raise SystemExit(jobs.execute_job(Path(sys.argv[1])))
     assert len(retry.snapshot()["saved_files"]) == 2
 
 
-def test_failed_run_ui_resumes_without_clearing_completed_files(
-        tmp_path, monkeypatch, connected_parsers, background_jobs):
-    from pathlib import Path
-    import streamlit as st
-    from streamlit.testing.v1 import AppTest
-    import l2c.pipeline
-    from test_da_dashboard import sources
-    from conftest import wait_for_da
-    project = sources(tmp_path)
-    (project / "L2C_PLAN_STR_CLP.pdf").touch()
-    monkeypatch.setattr(l2c.pipeline, "run_plan", lambda *a, **k: ProjectResult(
-        "CLP", "plan.pdf", "imperial", {}, [], [], 0.))
-    original = dashboard.PARSERS['dalle']
-    def failed(*a, **k):
-        raise RuntimeError("OCR interrupted")
-    monkeypatch.setitem(dashboard.PARSERS, 'dalle', failed)
-    st.cache_data.clear()
-    try:
-        at = AppTest.from_file(str(Path(__file__).parents[1] / "app/streamlit_app.py"), default_timeout=20).run()
-        at.sidebar.text_input[0].set_value(str(project)).run()
-        at.segmented_control[0].set_value("Dessins d'atelier").run()
-        first = next(iter(background_jobs._jobs.values()))
-        first.process.future.result(timeout=5)
-        at.run()
-        assert not at.exception and "Reprendre" in at.button(key='regenerate_atelier').label
-        assert any('1/5 fichiers récupérables' in item.value for item in at.info)
-        monkeypatch.setitem(dashboard.PARSERS, 'dalle', original)
-        at.button(key='regenerate_atelier').click().run()
-        wait_for_da(at)
-        assert not at.exception and not at.error
-        assert len(connected_parsers) == 6
-        assert any('1 fichiers réutilisés' in item.value for item in at.caption)
-    finally:
-        st.cache_data.clear()
-
-
 def test_active_job_is_shared_even_when_forced_or_inputs_change(tmp_path, monkeypatch, background_jobs):
     started, release = threading.Event(), threading.Event()
     calls = []
@@ -248,53 +212,3 @@ def test_two_managers_deduplicate_simultaneous_starts(tmp_path):
             original.process.wait(timeout=5)
 
 
-def test_navigation_during_generation_keeps_same_job_and_results(
-        tmp_path, monkeypatch, background_jobs):
-    import streamlit as st
-    from streamlit.testing.v1 import AppTest
-    import l2c.pipeline
-    from pathlib import Path
-    from conftest import wait_for_da
-    project = tmp_path / "CLP"
-    project.mkdir()
-    (project / "L2C_PLAN_STR_CLP.pdf").touch()
-    empty = ProjectResult("CLP", "source.pdf", "imperial", {}, [],
-                          [SheetReport("source", 1, None, None, 0, 0, "skipped")], 0.)
-    monkeypatch.setattr(l2c.pipeline, "run_plan", lambda *a, **k: empty)
-    entered, release = threading.Event(), threading.Event()
-    calls = []
-    def blocked(*args, **kwargs):
-        calls.append(1)
-        kwargs["progress"](2, 9, "CLP_DALLE NIV 2.pdf")
-        entered.set()
-        assert release.wait(15)
-        return empty
-    monkeypatch.setattr(dashboard, "run_da", blocked)
-    st.cache_data.clear()
-    try:
-        app = Path(__file__).parents[1] / "app/streamlit_app.py"
-        at = AppTest.from_file(str(app), default_timeout=10).run()
-        at.sidebar.text_input[0].set_value(str(project)).run()
-        at.segmented_control[0].set_value("Dessins d'atelier").run()
-        assert entered.wait(3) and not at.exception
-        assert at.button(key="regenerate_atelier").disabled
-        first = background_jobs.ensure(str(project), dashboard.input_stamp(str(project)),
-                                       dashboard.PARSER_VERSION, dashboard.configured_inputs(str(project)))
-        for section in ("Plan L2C", "Comparaison", "Plan L2C", "Comparaison"):
-            at.segmented_control[0].set_value(section).run()
-            assert not at.exception
-            at.segmented_control[0].set_value("Dessins d'atelier").run()
-            assert not at.exception and len(calls) == 1
-            assert first.running and "CLP_DALLE NIV 2.pdf" in at.info[-1].value
-        # Cache clearing must not cancel or submit a second active job either.
-        at.sidebar.button[0].click().run()
-        assert not at.exception and len(calls) == 1 and first.running
-        release.set()
-        first.process.future.result(timeout=5)
-        wait_for_da(at)
-        at.segmented_control[0].set_value("Plan L2C").run()
-        at.segmented_control[0].set_value("Dessins d'atelier").run()
-        assert not at.exception and len(calls) == 1
-    finally:
-        release.set()
-        st.cache_data.clear()

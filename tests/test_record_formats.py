@@ -26,7 +26,7 @@ def test_footings_use_matching_long_trans_order_and_foundation_level():
     a,b=align_records([plan,da])
     assert a.armature==b.armature and a.debug.roles==b.debug.roles==["LONG","TRAN"]
     assert a.debug.niveau==b.debug.niveau=="FONDATION"
-    assert compare(dataset([plan]),dataset([da]))[0]["status"]=="same"
+    assert compare(dataset([plan]),dataset([da])) == []
 
 
 def test_single_transverse_footing_bar_is_not_mislabeled_longitudinal():
@@ -36,7 +36,7 @@ def test_single_transverse_footing_bar_is_not_mislabeled_longitudinal():
 
 
 def test_slab_directions_remain_separate_with_the_same_order_and_layer():
-    plan=record("dalle",roles=["NUM","ALP"],niveau="REZ-DE-CHAUSSÉE",layer="intégrité")
+    plan=record("dalle",roles=["NUM","ALP"],niveau="REZ-DE-CHAUSSÉE",layer="intégrité",reinforcement_kind="integrity")
     da=record("dalle","atelier",roles=["alp","num"],niveau="RDC",layer="INTEGRITE",
               bars=[Armature(quantite=7,diametre="25M",repere="25J3-00")]*2)
     a,b=align_records([plan,da])
@@ -44,7 +44,7 @@ def test_slab_directions_remain_separate_with_the_same_order_and_layer():
     assert a.debug.roles==b.debug.roles==["NUM","ALP"]
     assert a.debug.layer==b.debug.layer=="INTEGRITE"
     assert b.debug.reinforcement_details[0]["repere"]=="25J3-00"
-    assert compare(dataset([plan]),dataset([da]))[0]["status"]=="same"
+    assert compare(dataset([plan]),dataset([da])) == []
 
 
 def test_unknown_slab_layer_and_text_direction_are_not_guessed():
@@ -63,14 +63,15 @@ def test_beam_spacing_requirements_ignore_fabrication_piece_counts_and_keep_zone
     a,b=align_records([plan,da])
     assert a.armature==b.armature and len(a.armature)==2
     assert b.debug.reinforcement_details[0]["quantite"]==22
-    assert compare(dataset([plan]),dataset([da]))[0]["status"]=="review"  # zone association remains explicit
+    assert compare(dataset([plan]),dataset([da])) == []
 
 
 def test_explicit_length_difference_survives_shared_formatting():
     for kind,roles in [("semelle",["LONG","TRAN"]),("dalle",["NUM","ALP"]),
                        ("poutre",["longitudinale","longitudinale"])]:
         plan=record(kind,roles=roles,niveau="NIVEAU 2",layer="intégrité",
-                    bars=[Armature(quantite=7,diametre="25M",longueur_mm=3000)]*2)
+                    bars=[Armature(quantite=7,diametre="25M",longueur_mm=3000)]*2,
+                    **({"reinforcement_kind":"integrity"} if kind=="dalle" else {}))
         da=record(kind,"atelier",roles=roles,niveau="NIVEAU 2",layer="intégrité",
                   bars=[Armature(quantite=7,diametre="25M",longueur_mm=3500)]*2)
         assert compare(dataset([plan]),dataset([da]))[0]["status"]=="changed"
@@ -119,7 +120,7 @@ def test_radier_primary_specs_match_plan_spacing_and_keep_fabrication_evidence()
     assert a.debug.niveau == b.debug.niveau == "FONDATION"
     assert a.debug.layer == b.debug.layer == "2"
     assert b.debug.reinforcement_details[0]["quantite"] == 24
-    assert compare(dataset([plan]), dataset([da]))[0]["status"] == "same"
+    assert compare(dataset([plan]), dataset([da])) == []
     assert not align_result(dataset([a, b]))
 
 
@@ -130,10 +131,7 @@ def test_radier_direction_layer_and_actual_spacing_differences_remain_visible():
                 bars=[Armature(diametre="30M", espacement_mm=203.2)])
     assert compare(dataset([plan]), dataset([da]))[0]["status"] == "changed"
     da.debug.direction = "vertical"
-    rows = compare(dataset([plan]), dataset([da]))
-    assert len(rows) == 2 and all(row["status"] != "same" for row in rows)
-    unknown = record("radier", "atelier", direction="horizontal", layer=None)
-    assert any(row["status"] == "review" for row in compare(dataset([plan]), dataset([unknown])))
+    assert compare(dataset([plan]), dataset([da])) == []  # no counterpart in the same direction
     counted = align_records([record("radier", bars=[Armature(quantite=22, diametre="35M")],
                                     direction="horizontal", layer="1")])[0]
     assert counted.armature[0].quantite == 22

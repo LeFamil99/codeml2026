@@ -11,6 +11,7 @@ import time
 import hashlib
 import json
 import pickle
+from functools import lru_cache
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -28,9 +29,11 @@ from .jobs import write_pickle
 PARSER_VERSION = "clp-image-parsers-v2-all-slabs"
 COLUMN_SCOPE = "all-pages-v2-floor-boundaries"
 # Slab PDFs hold three sheets each (BAS, HAUT, ACIER D'INTÉGRITÉ); all are read.
-DALLE_SCOPE = "all-pages-v2-bas-haut-integrite-tréfond"
+DALLE_SCOPE = "last-page-v5-integrite-tréfond-nummalp-no-openings"
 # Kinds whose checkpoints are saved page by page, and kinds read in full.
 PAGE_CHECKPOINT_KINDS = {"colonne", "radier", "dalle"}
+# Read in full; every other kind reads only its last sheet.
+FULL_FILE_KINDS = {"colonne", "radier"}
 # Partie 1's first four schedules are superseded by Partie 3, but its fifth
 # sheet contains 23 additional basement columns absent from the newer PDF.
 COLUMN_SUPPLEMENT = "CLP_COLONNES Partie 1.pdf"
@@ -74,15 +77,32 @@ def input_files(inputs: Mapping[str, InputSource]) -> list[tuple[str, Path]]:
     return files
 
 
+@lru_cache(maxsize=512)
+def _digest(path: str, mtime_ns: int, size: int) -> str:
+    with open(path, "rb") as source:
+        return hashlib.sha256(source.read()).hexdigest()
+
+
+def content_digest(path) -> str:
+    """SHA-256 of a source PDF, memoised on its stat: the same content always gives the same key."""
+    stat = Path(path).stat()
+    return _digest(str(Path(path)), stat.st_mtime_ns, stat.st_size)
+
+
+def input_stamp_for(inputs: Mapping[str, InputSource]) -> tuple:
+    """File name and content of each selected PDF: the same file keeps its cache entries
+    whatever folder or session it comes from; a changed or removed file invalidates them."""
+    stamp = []
+    for kind, path in input_files(inputs):
+        scope = {"colonne": COLUMN_SCOPE, "dalle": DALLE_SCOPE}.get(kind)
+        digest = content_digest(path) if path.is_file() else None
+        stamp.append((kind, path.name, digest, *([scope] if scope else [])))
+    return tuple(stamp)
+
+
 def input_stamp(project_dir: str) -> tuple:
     """Only selected source PDFs invalidate the DA cache, including deletions."""
-    stamp = []
-    for kind, path in input_files(configured_inputs(project_dir)):
-        stat = path.stat() if path.is_file() else None
-        scope = {"colonne": COLUMN_SCOPE, "dalle": DALLE_SCOPE}.get(kind)
-        stamp.append((kind, str(path), stat.st_mtime_ns if stat else None,
-                      stat.st_size if stat else None, *([scope] if scope else [])))
-    return tuple(stamp)
+    return input_stamp_for(configured_inputs(project_dir))
 
 
 def _columns(page, filename):
@@ -125,8 +145,7 @@ PARSERS: dict[str, Callable] = {
 def file_checkpoint(kind, path, directory):
     """A checkpoint belongs to one parser revision and one unchanged PDF."""
     path = Path(path)
-    stat = path.stat()
-    fingerprint = [PARSER_VERSION, kind, str(path.resolve()), stat.st_mtime_ns, stat.st_size]
+    fingerprint = [PARSER_VERSION, kind, path.name, content_digest(path)]
     if kind == "colonne":
         fingerprint.append(COLUMN_SCOPE)
     elif kind == "dalle":
@@ -136,7 +155,7 @@ def file_checkpoint(kind, path, directory):
 
 
 def last_page_only(kind, path):
-    return kind not in PAGE_CHECKPOINT_KINDS or (kind == "colonne" and Path(path).name == COLUMN_SUPPLEMENT)
+    return kind not in FULL_FILE_KINDS or (kind == "colonne" and Path(path).name == COLUMN_SUPPLEMENT)
 
 
 def load_checkpoint(path, fingerprint):
@@ -357,8 +376,8 @@ def run_da(project_dir: str, progress=None,
         "imperial", {"basis": "CLP fabricator notation; dedicated parsers convert inches to mm"},
         align_records(records), sheets, round(time.monotonic() - started, 2),
         meta={"parser_version": PARSER_VERSION, "files": len(files), "pages": len(sheets),
-              "inputs": sources, "last_page_only": not (PAGE_CHECKPOINT_KINDS & inputs.keys()),
-              "page_policy": {kind: "all" if kind in PAGE_CHECKPOINT_KINDS else "last" for kind in inputs},
+              "inputs": sources, "last_page_only": not (FULL_FILE_KINDS & inputs.keys()),
+              "page_policy": {kind: "all" if kind in FULL_FILE_KINDS else "last" for kind in inputs},
               "tiers": {3: len(sheets)},
               "checkpoint_hits": checkpoint_hits,
               "page_checkpoint_hits": page_checkpoint_hits,
