@@ -6,3 +6,8 @@ headless = true
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+# One accent, used only for interactive controls (buttons, selected tabs, links).
+primaryColor = "#0066CC"
+font = "sans serif"

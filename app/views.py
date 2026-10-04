@@ -25,50 +25,22 @@ TIER_LABELS = {1: "texte", 2: "glyphes vectoriels", 3: "image (OCR)", 4: "illisi
 
 
 def render_comparison(plan, atelier):
-    from l2c.comparison import compare
-    rows = compare(plan, atelier)
-    labels = {"same": "Identique", "changed": "Armatures différentes",
-              "missing_plan": "Absent du plan", "missing_da": "Absent des DA",
-              "review": "À vérifier", "out_of_scope": "Hors couverture DA"}
-    st.caption("Comparaison des données extraites par les deux lecteurs, par élément, niveau et couche. "
-               "Les différences servent à corriger les lecteurs et à repérer les écarts à examiner.")
-    plan_columns = [r for r in plan.records if r.type_element == 'colonne']
-    da_columns = [r for r in atelier.records if r.type_element == 'colonne']
-    if plan_columns or da_columns:
-        st.caption(f"Colonnes — Plan : {len(plan_columns)} enregistrements sur "
-                   f"{len({r.element for r in plan_columns if r.element != 'UNKNOWN'})} coordonnées ; "
-                   f"DA : {len(da_columns)} enregistrements sur "
-                   f"{len({r.element for r in da_columns if r.element != 'UNKNOWN'})} coordonnées. "
-                   "L'unité commune est une coordonnée et un niveau. "
-                   "Même format : quantité/diamètre des verticales et diamètre/espacement des étriers. "
-                   "Les détails de fabrication restent dans les sources.")
-        if atelier.meta.get('page_policy', {}).get('colonne', 'last' if atelier.meta.get('last_page_only') else '') == 'last' and da_columns:
-            st.info("Colonnes : la lecture DA est limitée à la dernière page du tableau. "
-                    "Les totaux ne représentent donc pas nécessairement les mêmes coordonnées que le plan complet.")
-    counts = {status: sum(row['status'] == status for row in rows) for status in labels}
-    for column, status in zip(st.columns(len(labels)), labels):
-        column.metric(labels[status], counts[status])
-    st.caption("Ces totaux comptent les groupes de données extraites, pas les non-conformités confirmées. "
-               "Une différence de coordonnée peut produire un absent de chaque côté.")
-    with st.expander("Répartition des résultats par type"):
-        breakdown = [dict(Type=TYPE_LABELS[kind], **{
-            labels[status]: sum(row['type_element'] == kind and row['status'] == status for row in rows)
-            for status in labels}) for kind in sorted({row['type_element'] for row in rows})]
-        st.table(pd.DataFrame(breakdown).set_index("Type"))
-    st.info("Les types, niveaux ou couches sans données DA restent hors couverture. "
-            "Les poutres nécessitent une vérification du placement des barres, même lorsque leurs valeurs concordent.")
-    for sheet in atelier.sheets:
-        if sheet.status in ("unread", "no_callouts"):
-            st.warning(f"{sheet.fichier} : {sheet.reason or sheet.status}")
-    chosen_statuses = st.multiselect("Résultats", list(labels),
-        default=["changed", "missing_plan", "missing_da", "review"],
-        format_func=labels.get, key="comparison_status")
+    from l2c.comparison import compare_with_totals
+    rows, compared = compare_with_totals(plan, atelier)
+    st.caption("Éléments dont les armatures diffèrent entre le plan et les dessins d'atelier.")
+    st.metric("Armatures différentes", len(rows))
+    summary = pd.DataFrame([dict(Type=TYPE_LABELS[kind], Comparés=count,
+                                 Différents=sum(r['type_element'] == kind for r in rows),
+                                 Part=f"{100 * sum(r['type_element'] == kind for r in rows) / count:.0f} %")
+                            for kind, count in sorted(compared.items())])
+    if not summary.empty:
+        st.dataframe(summary, hide_index=True, width="stretch")
     kinds = st.multiselect("Types", sorted({row['type_element'] for row in rows}),
                           format_func=lambda kind: TYPE_LABELS[kind], key="comparison_types")
     storeys = st.multiselect("Niveaux", sorted({row['niveau'] for row in rows}),
                             format_func=lambda text: text or "Non indiqué", key="comparison_levels")
-    selected = [r for r in rows if r['status'] in chosen_statuses and
-                (not kinds or r['type_element'] in kinds) and (not storeys or r['niveau'] in storeys)]
+    selected = [r for r in rows if (not kinds or r['type_element'] in kinds) and
+                (not storeys or r['niveau'] in storeys)]
 
     def formatted(bars):
         values = []
@@ -79,22 +51,19 @@ def render_comparison(plan, atelier):
             values.append(f"{bar['role'] or '?'}: {quantity}{bar['diametre'] or '?'}{spacing}{length}")
         return " · ".join(values) or "—"
 
+    def sources(items, field):
+        return ", ".join(sorted({item[field] for item in items if item.get(field)})) or "—"
+
     table = pd.DataFrame([dict(Type=TYPE_LABELS[r['type_element']], Élément=r['element'],
-                              Niveau=r['niveau'], Couche=r['layer'], Statut=labels[r['status']],
-                              Plan=formatted(r['plan']), DA=formatted(r['atelier']),
-                              Motif=r['reason']) for r in selected])
+                              Niveau=r['niveau'], Couche=r['layer'],
+                              **{"Feuillet plan": sources(r['plan_sources'], 'feuillet'),
+                                 "Fichier DA": sources(r['atelier_sources'], 'fichier')},
+                              Plan=formatted(r['plan']), DA=formatted(r['atelier'])) for r in selected])
     if selected:
-        colors = {"Armatures différentes": "#ffe0da", "Absent du plan": "#ffe7ba",
-                  "Absent des DA": "#fff3b0", "À vérifier": "#e1edff"}
-        styled = table.style.apply(
-            lambda row: [
-                f"background-color: {colors.get(row.Statut, '#e4f3e6')}; color: #17212b"
-            ] * len(row), axis=1,
-        )
-        st.dataframe(styled, hide_index=True, width="stretch")
+        st.dataframe(table, hide_index=True, width="stretch")
         index = st.selectbox("Élément à examiner", range(len(selected)),
             format_func=lambda i: f"{TYPE_LABELS[selected[i]['type_element']]} · {selected[i]['element']} · "
-                                  f"{selected[i]['niveau']} · {selected[i]['layer']} · {labels[selected[i]['status']]}",
+                                  f"{selected[i]['niveau']} · {selected[i]['layer']}",
             key="comparison_evidence")
         with st.expander("Sources et annotations des deux lecteurs"):
             for column, side, title in zip(st.columns(2), ("plan", "atelier"), ("Plan L2C", "Dessins d'atelier")):
@@ -103,9 +72,15 @@ def render_comparison(plan, atelier):
                              "sources": selected[index][f'{side}_sources'],
                              "non_appariées": selected[index][f'unmatched_{side}']})
     else:
-        st.info("Aucun résultat pour ces filtres.")
-    st.download_button("Télécharger la comparaison JSON", json.dumps(rows, ensure_ascii=False, indent=2),
-                       file_name=f"{plan.project}_comparaison.json", mime="application/json")
+        st.info("Aucune différence pour ces filtres.")
+    from l2c.report.comparison_pdf import build_comparison_pdf
+    json_column, pdf_column = st.columns(2)
+    json_column.download_button("Télécharger la comparaison JSON", json.dumps(rows, ensure_ascii=False, indent=2),
+                                file_name=f"{plan.project}_comparaison.json", mime="application/json",
+                                width="stretch")
+    pdf_column.download_button("Télécharger le rapport PDF", build_comparison_pdf(rows, plan, atelier),
+                               file_name=f"{plan.project}_rapport_comparaison.pdf", mime="application/pdf",
+                               width="stretch")
 
 
 @dataclass(frozen=True)
@@ -124,12 +99,12 @@ PLAN = Dataset(
     key="plan", unit="feuillet", unit_label="Feuillet", units_label="Feuillets",
     json_name="elements_plan.json", done_label="Feuillets traités", noun="éléments d'armature extraits du plan",
     scope_md=(
-        "- ✅ Extraction côté **plan**, tous les types : radiers (S-050), semelles (S-100), "
+        "- [x] Extraction côté **plan**, tous les types : radiers (S-050), semelles (S-100), "
         "poutres (S-300), murs de refend (S-400), colonnes (S-500), dalles (S-600)\n"
-        "- ✅ JSON conforme à l'annexe A + manifeste de run\n"
-        "- ✅ Comparaison des extractions dans la section Comparaison\n"
-        "- ⬜ Classement des non-conformités et rapport final\n"
-        "- ⬜ Rapport PDF\n\n"
+        "- [x] JSON conforme à l'annexe A + manifeste de run\n"
+        "- [x] Comparaison des extractions dans la section Comparaison\n"
+        "- [ ] Classement des non-conformités et rapport final\n"
+        "- [ ] Rapport PDF\n\n"
         "Les feuillets non traités sont listés explicitement plutôt que comptés à zéro."
     ),
 )
@@ -139,10 +114,10 @@ ATELIER = Dataset(
     json_name="elements_atelier.json", done_label="Pages traitées", noun="éléments d'armature extraits des dessins d'atelier",
     scope_md=(
         "Avancement détaillé : **DA_PLAN.md**.\n\n"
-        "- ✅ Cinq lecteurs CLP : colonnes, dalles, semelles, poutres et radiers\n"
-        "- ✅ Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; radiers et dalles : fichier complet ; semelles et poutres : dernière page\n"
-        "- ✅ Nettoyage des résultats, dédoublonnage et JSON annexe A\n"
-        "- ⬜ Autres fichiers, projets et sélection directe des PDF dans l'interface\n\n"
+        "- [x] Cinq lecteurs CLP : colonnes, dalles, semelles, poutres et radiers\n"
+        "- [x] Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; radiers : fichier complet ; dalles, semelles et poutres : dernière page\n"
+        "- [x] Nettoyage des résultats, dédoublonnage et JSON annexe A\n"
+        "- [ ] Autres fichiers, projets et sélection directe des PDF dans l'interface\n\n"
         "Les lecteurs DA sont **aveugles** : ils ne voient jamais les valeurs du plan. "
         "Un fichier non lu est listé avec son motif."
     ),
@@ -225,10 +200,8 @@ def frames(result) -> tuple[pd.DataFrame, pd.DataFrame]:
 def kpi_row(spec: Dataset, result, df: pd.DataFrame) -> None:
     t = result.totals
     st.markdown(
-        f"<div style='font-size:3rem;line-height:1.1;font-weight:600;color:{theme.INK}'>"
-        f"{t['elements']:,}</div>"
-        f"<div style='color:{theme.INK_2};margin-bottom:.75rem'>"
-        f"{spec.noun} — {result.project}, {result.plan_file}</div>",
+        f"<div class='l2c-figure'>{t['elements']:,}</div>"
+        f"<div class='l2c-figure-note'>{spec.noun} — {result.project}, {result.plan_file}</div>",
         unsafe_allow_html=True,
     )
     by_type = df.type.value_counts() if not df.empty else {}

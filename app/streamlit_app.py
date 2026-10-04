@@ -10,104 +10,47 @@ Run:  streamlit run app/streamlit_app.py
 
 from __future__ import annotations
 
-import io
 import os
 import sys
-import tempfile
 import time
-import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import streamlit as st
 
+import intake as _intake
+import theme
 import views
-from l2c.da.dashboard import PARSER_VERSION, configured_inputs, input_files, input_stamp
+from l2c.da.dashboard import PARSER_VERSION, input_files, input_stamp_for
 from l2c.da.jobs import get_manager
-from l2c.pipeline import find_plan, run_plan
+from l2c.pipeline import run_plan
 from l2c.io_json import PIPELINE_VERSION
 
-st.set_page_config(page_title="Révision L2C", page_icon="📐", layout="wide")
+st.set_page_config(page_title="Révision L2C", layout="wide")
+theme.apply()
 
-DEFAULT_CORPUS = os.path.expanduser("~/Downloads/l2c-participants")
-
-
-# ----------------------------------------------------------------- intake
-def _session_dir() -> str:
-    if "session_dir" not in st.session_state:
-        st.session_state.session_dir = tempfile.mkdtemp(prefix="l2c_")
-    return st.session_state.session_dir
+def _store(upload, project: str) -> str:
+    return _intake.store(upload.name, upload.getvalue(), project)
 
 
-def _projects_under(path: str) -> list[str]:
-    """Sub-folders of `path` that are themselves projects."""
-    out = []
-    for name in sorted(os.listdir(path)):
-        d = os.path.join(path, name)
-        if os.path.isdir(d) and find_plan(d):
-            out.append(name)
-    return out
-
-
-def _from_folder() -> tuple[str, str] | None:
-    path = st.sidebar.text_input(
-        "Dossier des projets",
-        DEFAULT_CORPUS,
-        help="Le dossier qui contient les projets (ou directement le dossier d'un projet)",
-    ).strip().rstrip("/")
-    if not path:
+def intake():
+    """The plan, the parsing method and the DA files that method reads, each from its own input."""
+    from l2c.da.methods import DEFAULT_METHOD, METHODS
+    st.sidebar.header("Fichiers")
+    plan_upload = st.sidebar.file_uploader("Plan L2C", type="pdf", key="up_plan")
+    if plan_upload is None:
         return None
-    path = os.path.expanduser(path)
-    if not os.path.isdir(path):
-        st.sidebar.error("Dossier introuvable.")
-        return None
-
-    # the folder is itself a project
-    if plan := find_plan(path):
-        st.sidebar.success(f"Projet : **{os.path.basename(path)}**")
-        return os.path.basename(path), plan
-
-    # a folder of projects: pick ONE from the dropdown
-    children = _projects_under(path)
-    if not children:
-        st.sidebar.error("Aucun L2C_PLAN_STR_*.pdf dans ce dossier ni dans ses sous-dossiers.")
-        return None
-    chosen = st.sidebar.selectbox("Projet", children)
-    return chosen, find_plan(os.path.join(path, chosen))
-
-
-def _from_zip() -> tuple[str, str] | None:
-    up = st.sidebar.file_uploader("Archive d'un projet (.zip)", type="zip")
-    if up is None:
-        return None
-    target = os.path.join(_session_dir(), up.name[:-4])
-    if not os.path.isdir(target):
-        with st.spinner("Extraction de l'archive…"):
-            with zipfile.ZipFile(io.BytesIO(up.getvalue())) as zf:
-                zf.extractall(target)
-    plans = [
-        (f.replace("L2C_PLAN_STR_", "")[:-4], os.path.join(dp, f))
-        for dp, _, files in os.walk(target)
-        for f in files
-        if f.startswith("L2C_PLAN_STR") and f.endswith(".pdf")
-    ]
-    if not plans:
-        st.sidebar.error("Aucun L2C_PLAN_STR_*.pdf dans l'archive.")
-        return None
-    if len(plans) == 1:
-        st.sidebar.success(f"Projet : **{plans[0][0]}**")
-        return plans[0]
-    st.sidebar.info(f"{len(plans)} projets dans l'archive — choisissez-en un.")
-    name = st.sidebar.selectbox("Projet", [p[0] for p in plans])
-    return name, dict(plans)[name]
-
-
-def intake() -> tuple[str, str] | None:
-    """Pick exactly ONE project to analyse."""
-    st.sidebar.header("Projet à analyser")
-    mode = st.sidebar.radio("Source", ["Dossier", "Archive ZIP"],
-                            label_visibility="collapsed", horizontal=True)
-    return _from_folder() if mode == "Dossier" else _from_zip()
+    project = _intake.project_name(plan_upload.name)
+    plan_path = _store(plan_upload, project)
+    st.sidebar.subheader("Dessins d'atelier")
+    method = st.sidebar.selectbox("Méthode d'analyse", list(METHODS), index=list(METHODS).index(DEFAULT_METHOD),
+                                  format_func=lambda key: METHODS[key].label, key="da_method")
+    da = {}
+    for kind in METHODS[method].categories:
+        uploads = st.sidebar.file_uploader(_intake.DA_LABELS[kind], type="pdf", accept_multiple_files=True,
+                                           key=f"up_{method}_{kind}")
+        da[kind] = [_store(upload, project) for upload in uploads or []]
+    return project, plan_path, method, da
 
 
 # ----------------------------------------------------------------- run
@@ -140,12 +83,11 @@ st.title("Révision des dessins d'atelier — L2C")
 
 selection = intake()
 if selection is None:
-    st.info("Indiquez le dossier des projets (ou téléversez l'archive d'un projet) pour commencer.")
+    st.info("Téléversez le plan L2C (PDF) dans le panneau de gauche pour commencer.")
     st.stop()
 
-chosen, plan_path = selection
-project_dir = os.path.dirname(plan_path)
-st.sidebar.caption(f"`{os.path.basename(plan_path)}`")
+project, plan_path, method, da_sources = selection
+project_dir = os.path.join(_intake.UPLOAD_ROOT, project)
 if st.sidebar.button("Vider le cache"):
     st.cache_data.clear()
     get_manager().clear_completed()
@@ -159,7 +101,7 @@ if section == "Plan L2C":
     st.caption("Extraction côté plan (tous les types d'éléments) et base JSON.")
     if st.button("Vider le cache et régénérer", key="regenerate_plan"):
         _run_plan.clear(plan_path, os.path.getmtime(plan_path), PIPELINE_VERSION)
-    with st.spinner(f"Extraction du plan de {chosen}…"):
+    with st.spinner(f"Extraction du plan de {project}…"):
         result = _run_plan(plan_path, os.path.getmtime(plan_path), PIPELINE_VERSION)
     from l2c.record_formats import align_result
     align_result(result)
@@ -171,11 +113,7 @@ elif section == "Comparaison":
     if not loaded or loaded[0] != signature:
         st.info("Chargez le Plan L2C pour ce projet avant de comparer.")
         st.stop()
-    try:
-        stamp = input_stamp(project_dir)
-    except ValueError as error:
-        st.info(str(error))
-        st.stop()
+    stamp = (("method", method),) + input_stamp_for(da_sources)
     job = get_manager().lookup(project_dir, stamp, PARSER_VERSION)
     status = job.snapshot()["status"] if job else None
     if status != "completed":
@@ -186,24 +124,22 @@ elif section == "Comparaison":
         st.stop()
     views.render_comparison(loaded[1], job.result())
 else:
-    st.caption("Colonnes CLP : Partie 3 complet et supplément sous-sol (Partie 1, page 5). "
-               "Radiers et dalles (BAS, HAUT, intégrité) : fichier complet. Semelles et poutres : dernière page.")
-    try:
-        sources = configured_inputs(project_dir)
-    except ValueError as error:
-        st.info(str(error))
-        st.stop()
+    st.caption("Colonnes et radiers : fichier complet. Dalles, semelles et poutres : dernière page.")
+    missing = [_intake.DA_LABELS[kind] for kind in da_sources if not da_sources[kind]]
+    if missing:
+        st.info("Aucun fichier pour : " + ", ".join(missing) + ".")
     with st.expander("Fichiers utilisés"):
-        for _, path in input_files(sources):
-            st.write(path.name)
-    stamp = input_stamp(project_dir)
+        for kind, paths in da_sources.items():
+            for path in paths:
+                st.write(f"{_intake.DA_LABELS[kind]} · {os.path.basename(path)}")
+    stamp = (("method", method),) + input_stamp_for(da_sources)
     manager = get_manager()
-    job = manager.ensure(project_dir, stamp, PARSER_VERSION, sources)
+    job = manager.ensure(project_dir, stamp, PARSER_VERSION, da_sources, method=method)
     status = job.snapshot()["status"]
     label = "Reprendre la génération (conserver les fichiers sauvegardés)" if status == "failed" else "Vider le cache et régénérer"
     if st.button(label, key="regenerate_atelier", disabled=job.running):
-        job = manager.ensure(project_dir, stamp, PARSER_VERSION, sources, force=True,
-                             reparse=status == "completed")
+        job = manager.ensure(project_dir, stamp, PARSER_VERSION, da_sources, force=True,
+                             reparse=status == "completed", method=method)
     state = job.snapshot()
     if state["status"] == "completed":
         st.caption(f"{job.result().meta.get('checkpoint_hits', 0)} fichiers réutilisés depuis le cache.")
@@ -211,9 +147,9 @@ else:
     elif state["status"] == "failed":
         st.error(f"La génération DA a échoué : {state['error']}")
         from l2c.da.dashboard import checkpoint_inventory
-        saved = checkpoint_inventory(sources, manager.root / "file_results")
-        st.info(f"{len(saved)}/{len(input_files(sources))} fichiers récupérables dans le cache. "
-                "Reprendre réutilise les pages de colonnes sauvegardées et les autres fichiers en cache.")
+        saved = checkpoint_inventory(da_sources, manager.root / "file_results")
+        st.info(f"{len(saved)}/{len(input_files(da_sources))} fichiers récupérables dans le cache. "
+                "Reprendre réutilise les pages sauvegardées et les autres fichiers en cache.")
         st.caption(f"{len(state.get('saved_pages', []))} pages déjà sauvegardées sur disque.")
         if state.get("traceback"):
             with st.expander("Détails de l'erreur"):

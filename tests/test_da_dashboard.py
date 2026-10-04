@@ -193,7 +193,7 @@ def test_input_stamp_tracks_selected_files_including_removal(tmp_path):
     assert dashboard.input_stamp(str(project)) != changed
 
 
-def test_all_slab_pdfs_read_every_sheet_and_keep_each_file_in_the_output(
+def test_all_slab_pdfs_read_their_last_sheet_and_keep_each_file_in_the_output(
         tmp_path, connected_parsers):
     project = sources(tmp_path)
     directory = project / "DA/Dalles"
@@ -206,18 +206,16 @@ def test_all_slab_pdfs_read_every_sheet_and_keep_each_file_in_the_output(
             doc.save(directory / filename)
     (directory / "notes.txt").touch()
     (directory / "nested.pdf").mkdir()
-    # Each slab PDF holds one sheet per page (BAS, HAUT, intégrité, ...): all are read.
-    pages = {"CLP_DALLE NIV 3.pdf": 1, **{filename: index for index, filename in enumerate(extra, 3)}}
+    # Slabs are read on their last sheet only (the intégrité sheet): one read per file.
+    last = {"CLP_DALLE NIV 3.pdf": 1, **{filename: index for index, filename in enumerate(extra, 3)}}
     result = dashboard.run_da(str(project))
     slabs = [r for r in result.records if r.type_element == "dalle"]
-    assert {r.fichier for r in slabs} == set(pages)
+    assert {r.fichier for r in slabs} == set(last)
     assert len(set(r.id for r in result.records)) == len(result.records)
     assert result.meta["files"] == 10
-    assert Counter(call[2] for call in connected_parsers if call[0] == "dalle") == pages
+    assert Counter(call[2] for call in connected_parsers if call[0] == "dalle") == dict.fromkeys(last, 1)
     sheets = [s for s in result.sheets if s.type_element == "dalle"]
-    assert Counter(s.fichier for s in sheets) == pages
-    assert all(sorted(s.page for s in sheets if s.fichier == name) == list(range(1, count + 1))
-               for name, count in pages.items())
+    assert {s.fichier: s.page for s in sheets} == last
     # Future uploads can provide a list; one path repeated must run only once.
     paths = dashboard.configured_inputs(str(project))["dalle"]
     uploaded = dashboard.run_da(str(project), inputs={"dalle": [*paths, paths[0]]})
@@ -345,58 +343,6 @@ def test_corrupt_checkpoint_is_reparsed_and_version_change_invalidates_cache(
     assert dashboard.checkpoint_inventory(inputs, cache) == []
     changed = dashboard.run_da(str(project), checkpoint_dir=cache)
     assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 12
-
-
-def test_da_ui_uses_the_connected_parsers_and_downloads_their_records(
-        tmp_path, monkeypatch, connected_parsers, background_jobs):
-    import os
-    st = pytest.importorskip("streamlit")
-    from streamlit.testing.v1 import AppTest
-    import l2c.pipeline
-    downloaded = []
-    original_dump = io_json.dump_records
-    def capture_download(records):
-        payload = original_dump(records)
-        downloaded.append(payload)
-        return payload
-    monkeypatch.setattr(io_json, "dump_records", capture_download)
-    project = sources(tmp_path, all_slabs=True)
-    plan = project / "L2C_PLAN_STR_CLP.pdf"
-    plan.touch()
-    monkeypatch.setattr(l2c.pipeline, "run_plan", lambda *a, **k: l2c.pipeline.ProjectResult(
-        "CLP", plan.name, "imperial", {}, [],
-        [l2c.pipeline.SheetReport("S-001", 1, None, None, 0, 0, "skipped")], 0.))
-    st.cache_data.clear()
-    try:
-        app = os.path.join(os.path.dirname(__file__), "..", "app", "streamlit_app.py")
-        at = AppTest.from_file(app, default_timeout=30).run()
-        at.sidebar.text_input[0].set_value(str(project)).run()
-        at.segmented_control[0].set_value("Dessins d'atelier").run()
-        wait_for_da(at)
-        assert not at.exception
-        assert len(connected_parsers) == 11
-        metrics = {m.label: m.value for m in at.metric}
-        assert metrics["Radiers"] == "1" and metrics["Pages traitées"] == "11"
-        assert metrics["Pages lues par OCR"] == "11"
-        for filename in (p.name for p in dashboard.configured_inputs(str(project))["dalle"]):
-            assert any(filename in text.value for text in at.markdown)
-        tables = [df.value for df in at.dataframe if "armature" in df.value]
-        assert any("LONG: 11-25M · TRAN: 11-25M" in value
-                   for table in tables for value in table.armature)
-        at.run()
-        assert not at.exception and len(connected_parsers) == 11
-        at.segmented_control[0].set_value("Plan L2C").run()
-        assert not at.exception
-        at.segmented_control[0].set_value("Dessins d'atelier").run()
-        assert not at.exception and len(connected_parsers) == 11
-        at.button(key="regenerate_atelier").click().run()
-        wait_for_da(at)
-        assert not at.exception and len(connected_parsers) == 22
-        # Capture the serialization actually invoked by the UI download view.
-        assert len(downloaded[-1]) == 10
-        assert {r["type_element"] for r in downloaded[-1]} == set(dashboard.CLP_FILES)
-    finally:
-        st.cache_data.clear()
 
 
 def test_adding_radiers_reuses_all_existing_parser_checkpoints(tmp_path, connected_parsers):

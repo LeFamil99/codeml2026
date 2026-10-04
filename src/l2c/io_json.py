@@ -16,7 +16,7 @@ APPENDIX_A_FIELDS = {"id", "source", "fichier", "feuillet", "page", "x", "y",
 
 
 
-PIPELINE_VERSION = "0.3.2-grouped-beams"
+PIPELINE_VERSION = "0.3.4-integrity-slabs-only"
 
 def dump_records(records: list[ElementRecord]) -> list[dict[str, Any]]:
     return [r.to_schema() for r in align_records(records)]

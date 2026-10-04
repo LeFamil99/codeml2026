@@ -52,10 +52,8 @@ def test_clp_integrity_labels_resolve_to_each_direction(corpus, index, sheet, co
             ElementRecord.model_validate(record.to_schema())
         j15 = [r for r in integrity if r.element == "J-15"]
         assert len(j15) == 1 and j15[0].debug.integrity_type == "B"
-        if sheet == "S-601":
-            numeric = next(r for r in records if r.debug.raw[0] == "11(5)")
-            assert numeric.debug.reinforcement_kind == "slab"
-            assert numeric.debug.parenthesized_count == 5
+        # Only integrity steel is extracted; general numeric callouts are not part of the output.
+        assert all(r.debug.reinforcement_kind == "integrity" for r in records)
 
 
 def test_missing_integrity_table_is_reported_without_invented_quantities(corpus):

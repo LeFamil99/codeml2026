@@ -32,3 +32,40 @@ STATUS = {
     "skipped":     (WARNING, "◔", "hors périmètre"),
     "unread":      (CRITICAL, "✕", "non lu"),
 }
+
+
+# Interface chrome. Only type, spacing, radius and hairlines are set here: surfaces and text colours
+# stay with Streamlit's own light or dark appearance, so the app never offers its own switch.
+# The accent (for controls) is set in .streamlit/config.toml; the four status hues above keep their
+# meaning and always ship with an icon and a label.
+CSS = """
+html, .stApp, .stApp button, .stApp input, .stApp textarea {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.block-container { max-width: 1120px; padding-top: 2.25rem; padding-bottom: 4rem; }
+h1 { font-size: 1.75rem !important; font-weight: 650 !important; letter-spacing: -0.02em; margin-bottom: .25rem; }
+h2 { font-size: 1.25rem !important; font-weight: 600 !important; letter-spacing: -0.01em; margin-top: 2rem; }
+h3 { font-size: 1.0625rem !important; font-weight: 600 !important; }
+[data-testid="stCaptionContainer"] { font-size: .875rem; opacity: .72; }
+[data-testid="stMetric"] {
+  border: 1px solid rgba(127, 127, 127, .22); border-radius: 12px; padding: .9rem 1.05rem;
+}
+[data-testid="stMetricLabel"] p { font-size: .8125rem; font-weight: 500; opacity: .72; }
+[data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+[data-testid="stSidebar"] { border-right: 1px solid rgba(127, 127, 127, .18); }
+.stButton > button, [data-testid="stBaseButton-secondary"] { border-radius: 10px; font-weight: 500; }
+[data-testid="stSegmentedControl"] button { border-radius: 8px; font-weight: 500; }
+[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
+[data-testid="stExpander"] { border-radius: 12px; }
+hr { opacity: .35; margin: 2rem 0; }
+.l2c-figure { font-size: 2.5rem; line-height: 1.1; font-weight: 650; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; }
+.l2c-figure-note { font-size: .9375rem; opacity: .72; margin: .25rem 0 1rem; }
+"""
+
+
+def apply():
+    import streamlit as st
+
+    st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)

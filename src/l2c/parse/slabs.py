@@ -40,7 +40,7 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
     diag = {"source": grid.evidence.get("source"), "letter_role": grid.letter_role,
             "typical_bar": typ, "warnings": []}
 
-    records: list[ElementRecord] = []
+    callouts: list[ElementRecord] = []
     seen: dict[str, int] = {}
     # the notes column / title block is skipped by position, but the plan itself can
     # run into it (LIGREP grid line 29 sits at 0.85-0.94 of the width, CLP's inset views
@@ -69,7 +69,7 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
         key = element or "UNKNOWN"
         seen[key] = seen.get(key, 0) + 1
         conf = max(0.0, 1.0 - 0.6 * cost - (0.0 if stated or typ else 0.2))
-        records.append(ElementRecord(
+        callouts.append(ElementRecord(
             id=f"{page.sheet_id}_{key}_{seen[key]}_plan", source="plan",
             fichier=page.fichier, feuillet=page.sheet_id, page=page.index + 1,
             x=l.cx, y=l.cy, type_element="dalle", element=key, armature=bars,
@@ -80,11 +80,13 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
                         reinforcement_kind="slab",
                         parenthesized_count=parenthesized_count),
         ))
-    sizeless = sum(1 for r in records if r.armature[0].diametre is None)
+    sizeless = sum(1 for r in callouts if r.armature[0].diametre is None)
     if sizeless:      # a sheet whose callouts all state their size needs no note (S-600C)
         diag["warnings"].append(f"no typical-bar note; {sizeless} size-less callouts carry no diameter")
     integrity, integrity_diag = slab_integrity.extract(page, grid)
-    records.extend(integrity)
+    # Only the circled integrity steel is extracted: the DA reads only the integrity sheet.
+    # General slab callouts stay out of the plan output until they can be compared.
+    records = list(integrity)
     diag["integrity"] = integrity_diag
     diag["warnings"].extend(integrity_diag["warnings"])
     diag["records"] = len(records)
