@@ -8,17 +8,18 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .model import ElementRecord, sort_key
+from .model import ElementRecord
+from .record_formats import align_records
 
 APPENDIX_A_FIELDS = {"id", "source", "fichier", "feuillet", "page", "x", "y",
                      "type_element", "element", "armature"}
 
 
 
-PIPELINE_VERSION = "0.3.0-da"
+PIPELINE_VERSION = "0.3.2-grouped-beams"
 
 def dump_records(records: list[ElementRecord]) -> list[dict[str, Any]]:
-    return [r.to_schema() for r in sorted(records, key=sort_key)]
+    return [r.to_schema() for r in align_records(records)]
 
 
 def write_records(path: str, records: list[ElementRecord]) -> int:

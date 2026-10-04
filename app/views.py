@@ -24,6 +24,77 @@ TYPE_LABELS = {"colonne": "Colonnes", "semelle": "Semelles", "radier": "Radiers"
 TIER_LABELS = {1: "texte", 2: "glyphes vectoriels", 3: "image (OCR)", 4: "illisible"}
 
 
+def render_comparison(plan, atelier):
+    from l2c.comparison import compare
+    rows = compare(plan, atelier)
+    labels = {"same": "Identique", "changed": "Armatures différentes",
+              "missing_plan": "Absent du plan", "missing_da": "Absent des DA",
+              "review": "À vérifier", "out_of_scope": "Hors couverture DA"}
+    st.caption("Comparaison des données extraites par les deux lecteurs, par élément, niveau et couche. "
+               "Les différences servent à corriger les lecteurs et à repérer les écarts à examiner.")
+    plan_columns = [r for r in plan.records if r.type_element == 'colonne']
+    da_columns = [r for r in atelier.records if r.type_element == 'colonne']
+    if plan_columns or da_columns:
+        st.caption(f"Colonnes — Plan : {len(plan_columns)} enregistrements sur "
+                   f"{len({r.element for r in plan_columns if r.element != 'UNKNOWN'})} coordonnées ; "
+                   f"DA : {len(da_columns)} enregistrements sur "
+                   f"{len({r.element for r in da_columns if r.element != 'UNKNOWN'})} coordonnées. "
+                   "L'unité commune est une coordonnée et un niveau.")
+        if atelier.meta.get('page_policy', {}).get('colonne', 'last' if atelier.meta.get('last_page_only') else '') == 'last' and da_columns:
+            st.info("Colonnes : la lecture DA est limitée à la dernière page du tableau. "
+                    "Les totaux ne représentent donc pas nécessairement les mêmes coordonnées que le plan complet.")
+    counts = {status: sum(row['status'] == status for row in rows) for status in labels}
+    for column, status in zip(st.columns(len(labels)), labels):
+        column.metric(labels[status], counts[status])
+    st.info("Radiers et types, niveaux ou couches sans données DA restent hors couverture. "
+            "Les poutres nécessitent une vérification du placement des barres, même lorsque leurs valeurs concordent.")
+    for sheet in atelier.sheets:
+        if sheet.status in ("unread", "no_callouts"):
+            st.warning(f"{sheet.fichier} : {sheet.reason or sheet.status}")
+    chosen_statuses = st.multiselect("Résultats", list(labels),
+        default=["changed", "missing_plan", "missing_da", "review"],
+        format_func=labels.get, key="comparison_status")
+    kinds = st.multiselect("Types", sorted({row['type_element'] for row in rows}),
+                          format_func=lambda kind: TYPE_LABELS[kind], key="comparison_types")
+    storeys = st.multiselect("Niveaux", sorted({row['niveau'] for row in rows}),
+                            format_func=lambda text: text or "Non indiqué", key="comparison_levels")
+    selected = [r for r in rows if r['status'] in chosen_statuses and
+                (not kinds or r['type_element'] in kinds) and (not storeys or r['niveau'] in storeys)]
+
+    def formatted(bars):
+        values = []
+        for bar in bars:
+            quantity = f"{bar['quantite']}-" if bar['quantite'] is not None else ""
+            spacing = f" @{bar['espacement_mm']:g} mm" if bar['espacement_mm'] is not None else ""
+            length = f" · L={bar['longueur_mm']:g} mm" if bar['longueur_mm'] is not None else ""
+            values.append(f"{bar['role'] or '?'}: {quantity}{bar['diametre'] or '?'}{spacing}{length}")
+        return " · ".join(values) or "—"
+
+    table = pd.DataFrame([dict(Type=TYPE_LABELS[r['type_element']], Élément=r['element'],
+                              Niveau=r['niveau'], Couche=r['layer'], Statut=labels[r['status']],
+                              Plan=formatted(r['plan']), DA=formatted(r['atelier']),
+                              Motif=r['reason']) for r in selected])
+    if selected:
+        colors = {"Armatures différentes": "#ffe0da", "Absent du plan": "#ffe7ba",
+                  "Absent des DA": "#fff3b0", "À vérifier": "#e1edff"}
+        styled = table.style.apply(lambda row: [f"background-color: {colors.get(row.Statut, '#e4f3e6')}" ] * len(row), axis=1)
+        st.dataframe(styled, hide_index=True, width="stretch")
+        index = st.selectbox("Élément à examiner", range(len(selected)),
+            format_func=lambda i: f"{TYPE_LABELS[selected[i]['type_element']]} · {selected[i]['element']} · "
+                                  f"{selected[i]['niveau']} · {selected[i]['layer']} · {labels[selected[i]['status']]}",
+            key="comparison_evidence")
+        with st.expander("Sources et annotations des deux lecteurs"):
+            for column, side, title in zip(st.columns(2), ("plan", "atelier"), ("Plan L2C", "Dessins d'atelier")):
+                column.write(title)
+                column.json({"armatures": selected[index][side],
+                             "sources": selected[index][f'{side}_sources'],
+                             "non_appariées": selected[index][f'unmatched_{side}']})
+    else:
+        st.info("Aucun résultat pour ces filtres.")
+    st.download_button("Télécharger la comparaison JSON", json.dumps(rows, ensure_ascii=False, indent=2),
+                       file_name=f"{plan.project}_comparaison.json", mime="application/json")
+
+
 @dataclass(frozen=True)
 class Dataset:
     key: str              # "plan" | "atelier"
@@ -43,7 +114,8 @@ PLAN = Dataset(
         "- ✅ Extraction côté **plan**, tous les types : radiers (S-050), semelles (S-100), "
         "poutres (S-300), murs de refend (S-400), colonnes (S-500), dalles (S-600)\n"
         "- ✅ JSON conforme à l'annexe A + manifeste de run\n"
-        "- ⬜ Appariement plan ↔ atelier et classement des non-conformités\n"
+        "- ✅ Comparaison des extractions dans la section Comparaison\n"
+        "- ⬜ Classement des non-conformités et rapport final\n"
         "- ⬜ Rapport PDF\n\n"
         "Les feuillets non traités sont listés explicitement plutôt que comptés à zéro."
     ),
@@ -54,14 +126,13 @@ ATELIER = Dataset(
     json_name="elements_atelier.json", done_label="Pages traitées", noun="éléments d'armature extraits des dessins d'atelier",
     scope_md=(
         "Avancement détaillé : **DA_PLAN.md**.\n\n"
-        "- ✅ Inventaire des fichiers DA, type d'élément et niveau de lecture par page\n"
-        "- ✅ Lecture des pages avec couche texte (CLP : colonnes, dalles, semelles, radier, "
-        "poutres ; LIGREP : colonnes)\n"
-        "- ⬜ Décodeur de glyphes vectoriels (340 pages sans texte)\n"
-        "- ⬜ Repérage sur la grille des pages décodées\n"
-        "- ⬜ Dialectes des autres fabricants\n\n"
-        "Le lecteur DA est **aveugle** : il ne voit jamais les valeurs du plan. "
-        "Une page non lue est listée avec son motif, jamais comptée comme conforme."
+        "- ✅ Quatre lecteurs CLP : colonnes, dalles, semelles et poutres\n"
+        "- ✅ Colonnes : toutes les pages de Partie 3 ; autres types : dernière page\n"
+        "- ✅ Nettoyage des résultats, dédoublonnage et JSON annexe A\n"
+        "- ⬜ Radiers : lecteur à venir\n"
+        "- ⬜ Autres fichiers, projets et sélection directe des PDF dans l'interface\n\n"
+        "Les lecteurs DA sont **aveugles** : ils ne voient jamais les valeurs du plan. "
+        "Un fichier non lu est listé avec son motif. Les radiers restent hors périmètre."
     ),
 )
 
@@ -90,6 +161,8 @@ def detail(d) -> str:
         bits.append(extra["role"])
     if extra.get("grid_line"):
         bits.append(f"axe {extra['grid_line']}")
+    if extra.get("position"):
+        bits.append(f"axes {extra['position']}")
     if extra.get("direction"):
         bits.append(extra["direction"])
     return ", ".join(bits)
@@ -146,7 +219,15 @@ def kpi_row(spec: Dataset, result, df: pd.DataFrame) -> None:
     by_type = df.type.value_counts() if not df.empty else {}
     tc = st.columns(len(TYPE_LABELS))
     for col, (k, label) in zip(tc, TYPE_LABELS.items()):
-        col.metric(label, f"{int(by_type.get(k, 0)):,}")
+        col.metric(label, "À venir" if k in result.meta.get("pending_types", [])
+                   else f"{int(by_type.get(k, 0)):,}")
+    beam_entries = sum(len(r.armature) for r in result.records if r.type_element == "poutre")
+    st.caption(f"Poutres : {int(by_type.get('poutre', 0))} éléments · {beam_entries} entrées d'armature. "
+               "Chaque poutre regroupe toutes ses annotations dans un même enregistrement.")
+    columns = [r for r in result.records if r.type_element == 'colonne']
+    if columns:
+        st.caption(f"Colonnes : {len(columns)} enregistrements coordonnée/niveau sur "
+                   f"{len({r.element for r in columns if r.element != 'UNKNOWN'})} coordonnées de grille.")
     c = st.columns(5)
     pct = 100 * t["located"] / t["elements"] if t["elements"] else 0
     c[0].metric("Localisés sur la grille", f"{t['located']:,}", f"{pct:.1f} %")
@@ -279,7 +360,7 @@ def units_table(spec: Dataset, units: pd.DataFrame) -> None:
         cols = ["feuillet", "page", "type", "niveau", "éléments", "localisés", "statut",
                 "motif", "avertissements", "grille", "échelle_pt_par_pouce"]
     else:
-        st.caption("Chaque page de chaque dessin d'atelier, avec son mode de lecture.")
+        st.caption("Dernière page de chaque fichier configuré, avec son état de lecture.")
         cols = ["dossier", "fichier", "page", "type", "lecture", "feuillet", "éléments",
                 "localisés", "statut", "motif", "avertissements"]
     show = units[[c for c in cols if c in units]].copy()
@@ -304,8 +385,8 @@ def diagnostics(spec: Dataset, result, units: pd.DataFrame) -> None:
         c[1].metric("Pages non lues", int((units.statut == "unread").sum()),
                     f"sur {len(units)}", delta_color="off")
         tiers = result.meta.get("tiers", {})
-        c[2].metric("Pages avec couche texte", tiers.get(1, 0),
-                    f"{tiers.get(2, 0)} en glyphes vectoriels", delta_color="off")
+        c[2].metric("Pages lues par OCR", int((units.statut == "extracted").sum()),
+                    f"{tiers.get(3, 0)} pages configurées", delta_color="off")
     if warn:
         cols = ["fichier", "feuillet", "avertissement"]
         frame = pd.DataFrame(warn, columns=cols)
@@ -329,7 +410,7 @@ def diagnostics(spec: Dataset, result, units: pd.DataFrame) -> None:
 def downloads(spec: Dataset, result, df: pd.DataFrame, units: pd.DataFrame) -> None:
     records = io_json.dump_records(result.records)
     payload = json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True)
-    st.caption("Les artefacts sont identiques à ceux produits par `l2c run`.")
+    st.caption("JSON annexe A des éléments extraits, avec exports CSV et manifeste.")
     c = st.columns(3)
     stem = spec.json_name.removesuffix(".json")
     c[0].download_button(spec.json_name, payload,
@@ -345,7 +426,7 @@ def downloads(spec: Dataset, result, df: pd.DataFrame, units: pd.DataFrame) -> N
         zf.writestr(f"{stem}.csv", df.to_csv(index=False))
         zf.writestr(f"{spec.units_label.lower()}.csv", units.to_csv(index=False))
         zf.writestr("run_manifest.json", json.dumps({
-            "pipeline_version": io_json.PIPELINE_VERSION,
+            "pipeline_version": result.meta.get("parser_version", io_json.PIPELINE_VERSION),
             "side": spec.key, "project": result.project, "source": result.plan_file,
             "unit_system": result.unit_system, "unit_evidence": result.unit_evidence,
             "totals": result.totals, "elapsed_s": result.elapsed_s, "meta": result.meta,

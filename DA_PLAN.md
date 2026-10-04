@@ -12,6 +12,71 @@ Design rationale and the measurements behind it live in [PLAN.md](PLAN.md) §5
 
 ## Status
 
+The **DA UI now uses the four CLP image parsers** through `l2c.da.dashboard`:
+columns Partie 3 plus Partie 1's fifth-page basement supplement, **all six slab PDFs** in `DA/Dalles`, isolated footings FND and
+beams. The three fixed paths and slab folder are configured relative to the
+selected CLP folder. Columns now read all pages of Partie 3, with the strip limit
+disabled; the other readers retain their existing page selection. Deduplicated Appendix-A records
+populate all tables and the `CLP_elements_atelier.json` download. Selected file
+timestamps/sizes, slab folder membership and parser version control the DA cache;
+the current folder supplies ten files, with thirteen selected pages: the four-page
+current column schedule and its separate basement supplement. Earlier repeated
+column sheets stay superseded. Completed older column-cell checkpoints are upgraded
+by re-reading only cells whose floor boundaries changed; other DA checkpoints are reused. Its regeneration button
+reruns these readers without invalidating the plan cache. Radiers are explicitly
+pending, handled separately by the teammate. Other projects have no connected
+DA readers yet. The runner accepts explicit input paths for future UI uploads.
+
+All four types now use `l2c.record_formats` for final storage, UI and comparison.
+Plan/DA records share role vocabulary/order, level aliases and reinforcement field
+meanings. Fabrication marks and spaced-beam piece counts stay in debug evidence;
+explicit lengths and independent directions/zones remain preserved. Existing typed
+job/file caches upgrade in place without PDF/OCR. Unknown slab layer/direction and
+partial directional reads stay flagged for review rather than being guessed.
+
+DA generation now runs through `l2c.da.jobs` in an independent Python worker,
+outside Streamlit page execution. Switching tabs/sections or refreshing reattaches
+to the same active job and completed result. Requests, process identity, progress
+and results persist under `.cache/da_jobs`, so code reloads and server restarts
+also recover existing workers. A filesystem lock prevents duplicate starts across
+managers. Completed PDFs are checkpointed individually: an interrupted worker's
+explicit retry resumes unfinished files instead of reparsing completed ones. Progress is
+saved after every file and polled once per second, with saved/reused counts.
+New jobs reuse valid checkpoints by default; only an explicit full regeneration
+bypasses them. Failed runs offer **Reprendre la génération** and a recoverable-file
+count. An abrupt process-exit test verifies that the next worker reuses the saved
+PDF after a manager reload. Active work survives cache clearing; regeneration is
+disabled until completion. Failures remain visible until explicit retry. Separate
+processes isolate PDF/OCR state from original-plan parsing during navigation.
+
+The **Comparaison** section now reads loaded plan/DA results without submitting
+work. It highlights changed armatures, one-sided elements and ambiguous readings;
+filters, source evidence and `CLP_comparaison.json` support parser refinement.
+Groups use type/level/slab-layer/identifier. Unsupported coverage stays listed
+separately; beam agreement still requires spatial review. Verification using the
+saved 75-plan/80-DA footing results gives 67 identical groups, the genuine L-13
+9-versus-11 difference, and 19 one-sided coordinate groups (including seven known
+coordinate alias pairs). No new OCR was needed for this comparison.
+
+Current standalone beam work: `poutre_clp.py` reads one CLP beam DA PDF, last page
+only, through pixels. Circle labels locate each titled elevation; small squares
+are stirrup-zone symbols. Shared notes give group totals, so resolve local zone
+counts against their observed shape/spacing definitions. Keep longitudinal,
+skin and stirrup roles and source evidence; do not invent missing quantities.
+Original S-300 now exports 187 callouts in 27 beams after fixing the right-margin
+cutoff and retaining numeric/letter axis positions. The DA sheet has 20 beams;
+both sides now save one beam record with its armature list (27/187 plan, 20/162
+DA). The shared representation preserves per-annotation roles and coordinates;
+existing result/checkpoint caches upgrade without OCR or extraction invalidation.
+The seven omitted cantilever elevations stay flagged. Review JSON files and the
+coverage-comparison limits are documented in `src/l2c/da/parsers/README.md`.
+Fresh last-page verification: 20 DA beams, 162 reinforcement readings, all 162
+post-OCR source checks passing; 150 of 152 original specifications found in the
+shared beams. P112/P116 spatial matches, nine unmatched DA annotations and seven
+missing beam elevations remain review findings. Generic zone recovery resolves
+38 symbols; the full run takes approximately four minutes. Forty-six focused
+tests pass and the original answer key remains 6/6.
+
 | Phase | What | Status | Result |
 |---|---|---|---|
 | 0 | Tab shell, shared components, DA inventory | ✅ done | both sections render from `app/views.py`; 137 files / 421 pages inventoried with type + tier |
@@ -51,6 +116,22 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done · ⚠️ done with known gaps
    truth before it is adopted (bake-off, Phase 2); the numbers go in the progress log.
 
 ---
+
+## Review policy — prefer detection over suppression
+
+The user explicitly prefers a defensive approach: flag more potential discrepancies
+and let a human dismiss false positives. Missing extracted plan counterparts,
+unresolved specifications, ambiguous matches and references delegated to other
+drawings remain flagged for human review. Context qualifies the finding; it does
+not suppress it or imply conformity. Keep confirmed reinforcement differences and
+potential discrepancies distinguishable, with their source evidence.
+
+CLP K-9, K-10, J-9 and J-10 therefore remain **discrepancies requiring human review**:
+their isolated-footing reinforcement has no identified counterpart in the original
+plan set. The crane-base subcontractor reference is explanatory context only.
+L-13 remains a confirmed reinforcement difference. A-6 remains a review finding
+with an identified original-parser omission. Suppress only proven duplicate
+observations of the same finding; never hide uncertainty to reduce the issue count.
 
 ## What the DA corpus is (measured 2026-10-03)
 
@@ -102,11 +183,36 @@ The fabricator's title block is not L2C's: the plan-side sheet-number reader ret
 
 ### Current work — CLP parsers by element type
 
-The current implementation uses image-only local OCR in standalone modules under
-`src/l2c/da/parsers/`. The earlier vector/text readers remain the dashboard path;
-the descriptions below document that earlier implementation.
+The current implementation uses image-only local OCR in modules under
+`src/l2c/da/parsers/`, connected to the dashboard through `l2c.da.dashboard`.
+The earlier vector/text readers in `da.pipeline` remain a historical CLI baseline;
+the phase descriptions below document that earlier implementation.
 
 - `colonne_clp.py`: ruled schedule cells, bottom grid labels and storey strips.
+- `semelle_clp.py`: isolated grey footing squares and hexagonal type markers,
+  linked to the drawing's **Nomenclature des semelles isolées** schedule. Reads
+  **one PDF, its last page only**; current verification uses
+  `CLP/DA/Fondations/CLP_SEMELLES FND.pdf`, page 1/1. The clean final review file is
+  `out/semelle_clp_output.json`, with coordinates, types and two separate directions
+  formatted as `7-25M · 7-25M`. Supports fractional axes, the single-strip inset,
+  lower-left markers, long pedestal segments and partly erased hexagons.
+  Verification: 85 annotations / 170 directional entries; all 85 marker-sized source
+  type labels were located, and all 14 schedule quantity/diameter cells matched.
+  Extraction took 35.56 seconds during the final concurrent test run. The type and
+  schedule checks do not independently validate grid-coordinate assignment; the
+  annotated last-page PDF supports that review. 32 focused tests passed, including
+  an image-only read with PDF text/vector extraction forbidden. Diagnostics retain
+  all 93 candidates, including eight excluded non-footing/unread shapes.
+  Cross-reference with the 75 original S-100 parser records: five annotations repeat
+  main-view footings in the inset (including inset Q-5 = main G-5), leaving 80 distinct
+  locations. Seven further raw coordinate differences align to the same physical
+  markers. Five locations are extra relative to the original parser: K-9, K-10,
+  J-9, J-10 and A-6. The first four replace the original crane-base radier's
+  representation; A-6 is present in the original drawing but is wrongly filtered
+  as a grid bubble. All 75 original records have counterparts; 74/75 reinforcement
+  pairs agree, with L-13 reading 9-25M per direction in the original output versus
+  11-25M per direction in the DA. Full evidence: `out/semelle_clp_comparison.json`,
+  `.md` and an annotated last-page `.pdf`. Raw parser outputs remain unchanged.
 - `dalle_clp.py`: **last page only for each slab PDF**, as requested; circular grid
   labels, independent main/inset grids, grey support rectangles and raised callouts.
   Checks every labelled intersection, with crops anchored to grid coordinates rather
@@ -137,6 +243,20 @@ definitions. Numeric slab annotations remain separate and retain parenthesized
 counts. The dashboard can regenerate either section with its own cache button.
 The final standalone DA review artifact is sanitized JSON; blank/unread rows stay
 in diagnostics, and optional unknown review fields are omitted.
+All three current standalone parsers now share `parsers/output.py` for removing
+identical repeated observations from final exports. Footings export 80 unique
+records / 160 directional entries; their five repeated inset annotations, including
+Q-5 = main G-5, remain in diagnostics with axis-alignment evidence. Columns deduplicate
+per coordinate/storey; slabs per coordinate/level/layer with independent viewports
+unless observed axes prove correspondence. Conflicting values survive with
+`duplicate_conflict=true` and a review reason. The regenerated Niveau 3 slab output
+has 75 rows, no identical repeats, and three repeated locations with conflicting
+OCR reads flagged for review. L-13 remains a genuine original-plan/DA discrepancy.
+The original S-100 crane-base note explicitly delegates its design to subcontractor
+DA; other original-plan crane references concern temporary slab openings (detail
+116). K/J-9/10 remain flagged as potential discrepancies requiring human review,
+with that external crane-base reference attached as context. The reference does
+not clear or suppress their flags under the user's defensive review policy.
 
 ### Phase 0 — Tab shell, shared components, DA inventory
 

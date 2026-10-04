@@ -13,7 +13,7 @@ Design document: **[PLAN.md](PLAN.md)** (measured evidence, architecture, open q
 | ✅ | **6/6** answer-key rows (`CLP_dismatch.xlsx`) derived from the plan — `make truth` |
 | ✅ | Appendix-A conformant **JSON** + run manifest, deterministic, unique ids |
 | ✅ | **Web dashboard**: pick one project folder → run → inspect → download |
-| 🟡 | **Dessins d'atelier** tab, same layout — progress in **[DA_PLAN.md](DA_PLAN.md)**: text-layer DA read (CLP 7,751 records, LIGREP columns 324); 340 outlined pages await the glyph decoder |
+| 🟡 | **Dessins d'atelier** tab: four CLP image parsers connected; complete column schedule, existing last-page readers for other types; radiers and other projects pending. Details in **[DA_PLAN.md](DA_PLAN.md)** |
 | ⬜ | Plan ↔ atelier matching and non-conformity classification |
 | ⬜ | PDF report |
 
@@ -50,7 +50,106 @@ Equivalent bare commands, if you prefer:
 .venv/bin/streamlit run app/streamlit_app.py
 ```
 
-## CLP slab image parser
+## CLP image parsers
+
+The DA dashboard now runs the four format-specific parsers through
+`src/l2c/da/dashboard.py`. The selected CLP project folder supplies these inputs:
+
+| Type | File under the CLP project folder |
+|---|---|
+| Colonnes | `DA/Colonnes/CLP_COLONNES Partie 3.pdf` and the basement supplement on page 5 of `CLP_COLONNES Partie 1.pdf` |
+| Dalles | Every PDF directly inside `DA/Dalles/` (currently RDC, Tréfond and Niveaux 2, 3, 4, 5) |
+| Semelles | `DA/Fondations/CLP_SEMELLES FND.pdf` |
+| Poutres | `DA/Poutres/CLP_POUTRES.pdf` |
+
+Columns process **all pages of Partie 3**, with every strip included, plus the
+23 basement-only columns on Partie 1's fifth page. Partie 1's repeated first four
+pages are superseded by Partie 3. Other readers
+retain their existing page scope. Results feed the tables and the **`elements_atelier.json`**
+download (download filename: `CLP_elements_atelier.json`, Appendix A). Per-parser
+review JSON files remain available through their standalone commands below.
+
+Both datasets pass through the same final formatter for columns, footings, slabs
+and beams. Roles, level aliases and primary reinforcement fields share the same
+meaning; source fabrication details remain in evidence. Existing saved results are
+upgraded without rerunning OCR. See the [shared format contract](src/l2c/da/parsers/README.md#identical-planda-record-meanings-required-for-future-parsers).
+**Radiers are pending**, displayed as “À venir”, and are excluded from this extraction.
+Other projects display an availability message instead of using CLP readers.
+
+DA generation runs in an **independent background process**. Switching sections,
+changing filters or refreshing the page reattaches to the same active job; completed
+results remain saved on disk. Progress updates automatically once per second.
+The durable registry in **`.cache/da_jobs/`** records worker identities, requests,
+progress and results. Module reloads and server restarts reconnect to existing
+workers instead of starting over. A filesystem lock prevents duplicate starts
+from multiple servers or sessions.
+
+Each completed PDF is checkpointed separately. If a worker stops, explicit retry
+resumes from those completed files; only unfinished files need parsing again.
+Checkpoints are reused only when source path, timestamp, size and parser version
+match. Every new job resumes by default. The failed-run button **Reprendre la
+génération** preserves these checkpoints and displays how many files can be
+recovered. Progress records each file immediately after its checkpoint has been
+flushed to disk, including the number reused. Invalid/truncated checkpoints are
+reparsed. Full regeneration of a completed result deliberately reparses its files.
+The current PDF restarts if it crashes before completion; previously completed
+PDFs survive page refreshes and server restarts. Older workers started before
+file checkpointing cannot recover partial results they never saved.
+The complete column schedule also checkpoints each page under
+`.cache/da_jobs/file_results/pages/`; an interruption within the PDF resumes from
+finished pages. Column page scope has its own cache signature, so changing it
+preserves all other file results. Selective column resets invalidate the aggregate
+DA result as well, including an existing server's in-memory registry, while retaining
+the other eight file checkpoints.
+
+Completed DA results depend on all selected source paths, timestamps, sizes and the
+dedicated parser version. Adding or removing a slab PDF also invalidates them. The current CLP
+folder supplies **ten files: six slabs, the current column schedule and its basement
+supplement, semelles and poutres**.
+Its regeneration button runs these readers again after a run finishes; it is disabled
+during generation. Clearing caches preserves active jobs. Failed runs show their
+error and require explicit resume to retry. Missing files
+appear explicitly as unread; the UI never falls back to the old generic readers.
+Later PDF uploads can supply the runner's explicit `inputs` mapping.
+The older DA runner remains for historical answer-key checks (`l2c truth`);
+its results are not the DA dashboard's source.
+
+After loading both sides, open **Comparaison**. It highlights changed armatures,
+elements absent from either side and readings requiring review, with type/level
+filters and the source annotations for each side. Matching uses the element
+identifier, normalized level and slab layer; unsupported coverage is listed
+separately, including radiers. Beam matches still require spatial review. Opening
+this section never submits or reruns a DA job. Download
+**`CLP_comparaison.json`** for all rows, including identical and out-of-scope rows;
+each contains the status/reason, both reinforcement lists, unmatched bars and
+source/debug evidence. This is a parser comparison, not a certified conformity report.
+
+Both sides save **one beam record containing all its reinforcement entries**:
+CLP has 27 plan beams with 187 entries and 20 DA beams with 162 entries. Counts are
+shown separately, using the same JSON structure. Annotation roles and positions
+remain in internal comparison evidence. Existing DA caches upgrade to this
+structure without rerunning OCR; the seven beams absent from this DA stay absent.
+
+CLP beam DA elevations now have a standalone reader, tested on the last page of
+`CLP_POUTRES.pdf`. **Review `out/poutre_clp_output.json`**; the grouped original is
+`out/poutre_clp_plan_output.json` and the comparison is `out/poutre_clp_comparison.json`.
+Circle axes appear as positions (`17 → 16 → 15`, `L → K`); small squares are stirrup
+zones, not additional beams. Original S-300 has **27 beams / 187 reinforcement
+callouts** after restoring the right-edge annotations. This DA contains 20 beams.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.poutre_clp \
+  --check --annotated out/poutre_clp_review.pdf \
+  --compare-plan "$HOME/Downloads/l2c-participants/CLP/L2C_PLAN_STR_CLP.pdf"
+```
+
+Shared stirrup totals are resolved through local zone quantities; unread zones,
+missing beams and reinforcement/dimension differences remain review findings.
+See [the parser architecture](src/l2c/da/parsers/README.md) for the JSON contract.
+Fresh single-file verification: **162/162 source checks**, **150/152 original
+specifications located**, 46 focused tests passing. P112/P116, nine unmatched DA
+annotations and seven missing beams remain review findings. The readable report
+is `out/poutre_clp_comparison.md`; source checks do not certify complete conformity.
 
 The original-plan slab reader also resolves circled integrity types from the plan's
 own detail table: CLP detail #101 on S-003 defines A as `2-15M` and B as `3-15M` in
@@ -87,7 +186,22 @@ Niveau 5's dashed column outlines in grey backgrounds are also detected.
 `--check` uses the hidden PDF text **only after**
 the image read, for validation. `--max-supports N` limits an exploratory run.
 Partial reads retain known values and flag unread lengths or marks. Dense callouts
-still need review; this parser is standalone and not yet wired into the dashboard.
+still need review; the dashboard uses this same parser for the configured Niveau 3 file.
+
+The CLP isolated-footing parser reads **one PDF, its last page only**. It links the
+small hexagonal type labels inside footing squares to the drawing's type schedule,
+then keeps longitudinal and transverse reinforcement separately.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.semelle_clp \
+  --check --annotated out/semelle_clp_review.pdf
+```
+
+**Final semelle file to review: `out/semelle_clp_output.json`**, with coordinates,
+type letters and summaries such as `7-25M · 7-25M`. Empty/unlocated rows stay in
+`out/semelle_clp_diagnostics.json`; `out/semelle_clp.json` is the Appendix-A export.
+The [parsers README](src/l2c/da/parsers/README.md) documents the strategy, JSON format
+and other output files. The dashboard uses this same reader for its configured semelle file.
 
 ## Results on the four development projects (plan side)
 

@@ -18,7 +18,7 @@ import os
 import re
 import time
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import cv2
@@ -30,6 +30,9 @@ from l2c.da.imageread import PageImage, TextLine, remove_rules, _join
 from l2c.da.parsers import colonne_clp as ocr
 from l2c.model import Debug, ElementRecord
 from l2c.units import BAR_DESIGNATORS, parse_spacing
+from l2c.da.parsers.output import (
+    deduplicate, reinforcement_key, view_correspondences, grid_identity, grid_quality,
+)
 
 log = logging.getLogger("dalle_clp")
 ZOOM = 2.0
@@ -97,6 +100,7 @@ class Support:
     check_equal: bool | None = None
     check_count_size_equal: bool | None = None
     anchor: tuple[float, float] | None = None
+    duplicate_conflict: bool = False
 
 
 @dataclass
@@ -107,6 +111,7 @@ class PageResult:
     supports: list[Support]
     warnings: list[str]
     seconds: float
+    deduplication: dict = field(default_factory=dict)
 
 
 def center(rect):
@@ -657,9 +662,32 @@ def parse_page(page: pymupdf.Page, filename: str = "", coordinates: list[str] | 
     return PageResult(filename, page.number + 1, views, selected, warnings, round(time.time() - started, 2))
 
 
+def unique_supports(result: PageResult) -> list[Support]:
+    """All final exports share the same repeated-detail filtering."""
+    mappings = view_correspondences([asdict(v) for v in result.views])
+    candidates = []
+    for index, s in enumerate(result.supports):
+        if not s.bars or not s.coordinate or not s.view:
+            continue
+        candidates.append(dict(index=index, fichier=result.fichier, page=s.page,
+            view=s.view, coordinate=s.coordinate, niveau=s.level, layer=s.layer,
+            summary=s.summary, status=s.status, confidence=s.confidence,
+            reinforcement=[dict(b, role=b.get("label")) for b in s.bars]))
+    selected, report = deduplicate(candidates,
+        identity=lambda row:(row["fichier"],row.get("niveau") or f"page-{row['page']}",
+                             row.get("layer"),*grid_identity(row,mappings)),
+        signature=lambda row:reinforcement_key(row["reinforcement"]),
+        quality=lambda row:grid_quality(row,mappings))
+    report["view_correspondences"] = mappings
+    result.deduplication = report
+    return [replace(result.supports[row["index"]], status=row["status"],
+                    reason=row.get("reason", result.supports[row["index"]].reason),
+                    duplicate_conflict=row.get("duplicate_conflict",False)) for row in selected]
+
+
 def records(result: PageResult, filename: str) -> list[ElementRecord]:
     out = []
-    for i, s in enumerate(result.supports, 1):
+    for i, s in enumerate(unique_supports(result), 1):
         if not s.bars:
             continue
         boxes = [pymupdf.Rect(b["bbox"]) for b in s.bars]
@@ -674,7 +702,8 @@ def records(result: PageResult, filename: str) -> list[ElementRecord]:
             debug=Debug(raw=s.lines, confidence=s.confidence, decode_path="ocr", tier=1,
                         locator_kind="grid", niveau=s.level, symbol_bbox=s.symbol_bbox,
                         layer=s.layer, roles=[b["label"] for b in s.bars], view=s.view,
-                        crop_bbox=s.crop_bbox, text_boxes=s.text_boxes)))
+                        crop_bbox=s.crop_bbox, text_boxes=s.text_boxes,
+                        duplicate_conflict=s.duplicate_conflict)))
     return out
 
 
@@ -714,7 +743,7 @@ def clean_output(results: list[PageResult]) -> list[dict]:
     """Final review JSON: located reinforcement only, with optional nulls omitted."""
     output = []
     for result in results:
-        for support in result.supports:
+        for support in unique_supports(result):
             if not support.coordinate or not support.view:
                 continue
             bars = []
@@ -734,6 +763,8 @@ def clean_output(results: list[PageResult]) -> list[dict]:
                        reinforcement=bars, status=support.status, confidence=support.confidence,
                        detection=support.detection, count_size_check=support.check_count_size_equal,
                        full_check=support.check_equal, reason=support.reason)
+            if support.duplicate_conflict:
+                row["duplicate_conflict"] = True
             output.append({key: value for key, value in row.items() if value is not None})
     return output
 
@@ -819,7 +850,7 @@ def main(argv=None) -> int:
                   "summary": s.summary, "reinforcement": [b["formatted"] for b in s.bars],
                   "roles": [b["label"] for b in s.bars], "status": s.status,
                   "confidence": s.confidence, "reason": s.reason}
-                 for r in results for s in r.supports if s.bars and s.coordinate]
+                 for r in results for s in unique_supports(r)]
     for path, data in ((args.json, [r.to_schema() for r in all_records]),
                        (args.diagnostics, [asdict(r) for r in results]),
                        (args.summary_json, summaries),

@@ -1,6 +1,22 @@
 # L2C Hackathon — "Du plan aux dessins d'atelier" — Implementation Plan
 
-**Status:** plan only, no code written.
+**Status:** original-plan readers implemented; four CLP image DA readers connected
+to the dashboard. Columns read all four pages of the latest Partie 3 PDF plus the
+distinct basement schedule on Partie 1 page 5; the
+other readers retain their existing page selection, including every slab PDF
+in CLP's `DA/Dalles` folder (currently six slabs, ten inputs total). Radiers are
+pending; direct UI PDF input and the other projects' DA readers follow separately.
+**Dashboard comparison:** the third section highlights parser differences and
+source evidence from already loaded results; unknown coverage and beam placement
+stay explicit review limits. DA jobs checkpoint each completed PDF on disk and
+resume missing files after failure; the formal conformity report remains pending.
+**Current beam implementation:** S-300 extraction now preserves each elevation's
+circle axes and restores right-edge callouts (CLP: 27 beams, 187 reinforcement
+entries, saved in 27 grouped beam records). Plan and DA use the same beam-record
+structure and retain each annotation's role and source position in debug data.
+The standalone CLP DA beam reader reads pixels from the last page only;
+shared stirrup totals resolve through square zone markers and local counts.
+See `src/l2c/da/parsers/README.md` for final JSON files and comparison limits.
 **Author:** prepared with Claude Code, 2026-10-03.
 **Evidence base:** every number in this document was measured on the real corpus in
 `~/Downloads/l2c-participants` during planning. Measurements are collected in
@@ -34,6 +50,15 @@ report = 50 points and they are far more controllable.** Plan accordingly.
 ---
 
 ## 2. What the data actually is (measured, not assumed)
+
+**Current user preference — defensive review:** prefer discrepancy recall over
+reducing false positives. Missing plan specifications/counterparts, ambiguous matches
+and delegated external references stay flagged for human review, with uncertainty
+and source context shown. A subcontractor reference must not automatically suppress
+an otherwise unmatched DA item. Confirmed differences remain distinguishable from
+potential issues. Proven repeated observations are deduplicated; uncertain findings
+are retained. CLP's four crane-base footings remain review discrepancies, while
+L-13 is a confirmed reinforcement difference.
 
 ### 2.1 Corpus census
 

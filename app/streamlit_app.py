@@ -3,7 +3,7 @@
 Two sections with the same layout and the same components (app/views.py):
 - Plan L2C: every element type of the plan -> JSON -> download;
 - Dessins d'atelier: the shop drawings of the same project (progress: DA_PLAN.md).
-Matching and the conformity report are later stages.
+The comparison section reviews loaded parser results; conformity reporting is pending.
 
 Run:  streamlit run app/streamlit_app.py
 """
@@ -14,6 +14,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -21,9 +22,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import streamlit as st
 
 import views
-from l2c.da.inventory import find_da_dir
-from l2c.da.pipeline import run_da
+from l2c.da.dashboard import PARSER_VERSION, configured_inputs, input_files, input_stamp
+from l2c.da.jobs import get_manager
 from l2c.pipeline import find_plan, run_plan
+from l2c.io_json import PIPELINE_VERSION
 
 st.set_page_config(page_title="Révision L2C", page_icon="📐", layout="wide")
 
@@ -110,22 +112,27 @@ def intake() -> tuple[str, str] | None:
 
 # ----------------------------------------------------------------- run
 @st.cache_data(show_spinner=False)
-def _run_plan(plan_path: str, mtime: float):
+def _run_plan(plan_path: str, mtime: float, parser_version: str):
     return run_plan(plan_path)
 
 
-def _da_stamp(project_dir: str) -> float:
-    """Newest mtime under DA/ - the cache key, so an edited DA file reruns."""
-    root = find_da_dir(project_dir)
-    if root is None:
-        return 0.0
-    return max((os.path.getmtime(os.path.join(dp, f))
-                for dp, _, fs in os.walk(root) for f in fs), default=0.0)
-
-
-@st.cache_data(show_spinner=False)
-def _run_da(project_dir: str, stamp: float):
-    return run_da(project_dir)
+@st.fragment(run_every="1s")
+def da_progress(job):
+    state = job.snapshot()
+    if state["status"] in ("completed", "failed"):
+        st.rerun()
+    current, total = state.get("current", 0), state.get("total", 0)
+    st.info(f"Fichier {current}/{total} : {state['filename']} — lecture en cours…"
+            if current else "Démarrage de la génération DA…")
+    completed = len(state['saved_files']) if 'saved_files' in state else max(0, current - 1)
+    st.progress(completed / max(1, total))
+    st.caption(f"{len(state.get('saved_files', []))}/{total} fichiers sauvegardés sur disque · "
+               f"{state.get('checkpoint_hits', 0)} réutilisés depuis le cache.")
+    if state.get('current_page'):
+        st.caption(f"Page {state['current_page']}/{state['file_pages']} du fichier · "
+                   f"{len(state.get('saved_pages', []))} pages sauvegardées sur disque.")
+    st.caption(f"En cours depuis {int(time.time() - state['started'])} s. "
+               "Vous pouvez naviguer : la génération continue en arrière-plan.")
 
 
 # ----------------------------------------------------------------- main
@@ -141,27 +148,76 @@ project_dir = os.path.dirname(plan_path)
 st.sidebar.caption(f"`{os.path.basename(plan_path)}`")
 if st.sidebar.button("Vider le cache"):
     st.cache_data.clear()
+    get_manager().clear_completed()
 
 section = st.segmented_control(
-    "Section", ["Plan L2C", "Dessins d'atelier"], default="Plan L2C",
+    "Section", ["Plan L2C", "Dessins d'atelier", "Comparaison"], default="Plan L2C",
     label_visibility="collapsed", key="section",
 ) or "Plan L2C"
 
 if section == "Plan L2C":
     st.caption("Extraction côté plan (tous les types d'éléments) et base JSON.")
     if st.button("Vider le cache et régénérer", key="regenerate_plan"):
-        _run_plan.clear(plan_path, os.path.getmtime(plan_path))
+        _run_plan.clear(plan_path, os.path.getmtime(plan_path), PIPELINE_VERSION)
     with st.spinner(f"Extraction du plan de {chosen}…"):
-        result = _run_plan(plan_path, os.path.getmtime(plan_path))
+        result = _run_plan(plan_path, os.path.getmtime(plan_path), PIPELINE_VERSION)
+    from l2c.record_formats import align_result
+    align_result(result)
+    st.session_state["loaded_plan"] = ((plan_path, os.path.getmtime(plan_path), PIPELINE_VERSION), result)
     views.render(views.PLAN, result)
-else:
-    st.caption("Lecture des dessins d'atelier du même projet — avancement détaillé dans "
-               "DA_PLAN.md. Le lecteur ne voit jamais les valeurs du plan.")
-    if find_da_dir(project_dir) is None:
-        st.warning(f"Aucun dossier DA dans {project_dir}.")
+elif section == "Comparaison":
+    signature = (plan_path, os.path.getmtime(plan_path), PIPELINE_VERSION)
+    loaded = st.session_state.get("loaded_plan")
+    if not loaded or loaded[0] != signature:
+        st.info("Chargez le Plan L2C pour ce projet avant de comparer.")
         st.stop()
-    if st.button("Vider le cache et régénérer", key="regenerate_atelier"):
-        _run_da.clear(project_dir, _da_stamp(project_dir))
-    with st.spinner(f"Lecture des dessins d'atelier de {chosen}…"):
-        result = _run_da(project_dir, _da_stamp(project_dir))
-    views.render(views.ATELIER, result)
+    try:
+        stamp = input_stamp(project_dir)
+    except ValueError as error:
+        st.info(str(error))
+        st.stop()
+    job = get_manager().lookup(project_dir, stamp, PARSER_VERSION)
+    status = job.snapshot()["status"] if job else None
+    if status != "completed":
+        st.info("La comparaison sera disponible lorsque la génération des dessins d'atelier sera terminée. "
+                "Cette section ne démarre aucune génération.")
+        if status in ("queued", "running"):
+            da_progress(job)
+        st.stop()
+    views.render_comparison(loaded[1], job.result())
+else:
+    st.caption("Colonnes CLP : Partie 3 complet et supplément sous-sol (Partie 1, page 5). "
+               "Dalles, semelles et poutres : dernière page.")
+    try:
+        sources = configured_inputs(project_dir)
+    except ValueError as error:
+        st.info(str(error))
+        st.stop()
+    st.info("Radiers : lecteur à venir. Ils ne sont pas inclus dans ces résultats.")
+    with st.expander("Fichiers utilisés"):
+        for _, path in input_files(sources):
+            st.write(path.name)
+    stamp = input_stamp(project_dir)
+    manager = get_manager()
+    job = manager.ensure(project_dir, stamp, PARSER_VERSION, sources)
+    status = job.snapshot()["status"]
+    label = "Reprendre la génération (conserver les fichiers sauvegardés)" if status == "failed" else "Vider le cache et régénérer"
+    if st.button(label, key="regenerate_atelier", disabled=job.running):
+        job = manager.ensure(project_dir, stamp, PARSER_VERSION, sources, force=True,
+                             reparse=status == "completed")
+    state = job.snapshot()
+    if state["status"] == "completed":
+        st.caption(f"{job.result().meta.get('checkpoint_hits', 0)} fichiers réutilisés depuis le cache.")
+        views.render(views.ATELIER, job.result())
+    elif state["status"] == "failed":
+        st.error(f"La génération DA a échoué : {state['error']}")
+        from l2c.da.dashboard import checkpoint_inventory
+        saved = checkpoint_inventory(sources, manager.root / "file_results")
+        st.info(f"{len(saved)}/{len(input_files(sources))} fichiers récupérables dans le cache. "
+                "Reprendre réutilise les pages de colonnes sauvegardées et les autres fichiers en cache.")
+        st.caption(f"{len(state.get('saved_pages', []))} pages déjà sauvegardées sur disque.")
+        if state.get("traceback"):
+            with st.expander("Détails de l'erreur"):
+                st.code(state["traceback"])
+    else:
+        da_progress(job)

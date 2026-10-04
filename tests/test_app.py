@@ -15,6 +15,7 @@ import pytest
 
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
+from conftest import wait_for_da
 
 APP = os.path.join(os.path.dirname(__file__), "..", "app", "streamlit_app.py")
 
@@ -93,7 +94,7 @@ def test_a_folder_without_a_plan_says_so(corpus, tmp_path_factory):
 def clp_da(corpus):
     at = _at(os.path.join(corpus, "CLP"))
     at.segmented_control[0].set_value("Dessins d'atelier").run()
-    return at
+    return wait_for_da(at, timeout=1800)
 
 
 def test_da_section_runs_without_exceptions(clp_da):
@@ -108,10 +109,12 @@ def test_da_section_reuses_the_same_layout(clp_da):
     assert {"Localisés sur la grille", "Pages traitées", "Système d'unités"} <= labels
 
 
-def test_da_inventory_counts_every_page(clp_da):
-    """CLP's DA: 12 files, 34 pages, all with a text layer (measured)."""
+def test_da_scope_includes_all_six_slab_last_pages(clp_da):
+    """Three fixed files plus all six slab files; radiers are explicitly pending."""
     m = {x.label: x.value for x in clp_da.metric}
-    assert m["Pages avec couche texte"] == "34"
+    assert m["Pages traitées"] == "9"
+    assert m["Pages lues par OCR"] == "9"
+    assert m["Radiers"] == "À venir"
 
 
 def test_da_units_come_from_the_shop_drawings_themselves(clp_da):

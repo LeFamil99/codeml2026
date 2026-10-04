@@ -1,15 +1,145 @@
 # DA parsers: strategy and architecture
 
 This directory contains **one parser per element type and project/fabricator layout**.
-The current parsers are `colonne_clp.py` and `dalle_clp.py`. They are standalone
-command-line tools used to develop and verify a format before integrating it into
-the main DA pipeline.
+The current parsers are `colonne_clp.py`, `dalle_clp.py`, `semelle_clp.py` and
+`poutre_clp.py`. They run both as standalone command-line tools and through the
+DA dashboard's dedicated runner, `l2c.da.dashboard`.
 
 The project-wide context is in [DA_PLAN.md](../../../../DA_PLAN.md) and
 [PLAN.md](../../../../PLAN.md). Those documents include older text/vector extraction
 strategies; the modules in this directory implement the newer **image-based** strategy.
 
+## Dashboard integration
+
+`app/streamlit_app.py` attaches to `l2c.da.jobs.JobManager`. Its independent worker
+calls `l2c.da.dashboard.run_da`, which opens each configured
+PDF, normalizes rotation, selects `document[-1]`, and invokes its dedicated parser.
+It never calls the old generic `da.pipeline.run_da`, reads unrelated DA folders, reads
+hidden text for validation, or accesses the original plan. The old pipeline remains
+a historical CLI baseline. Shared `ProjectResult`/`SheetReport` objects connect
+these readers to all existing UI views and downloads.
+
+The configured paths are relative to the selected **CLP** project folder:
+
+| Parser | Source |
+|---|---|
+| `colonne_clp` | `DA/Colonnes/CLP_COLONNES Partie 3.pdf` |
+| `dalle_clp` | Every PDF directly inside `DA/Dalles/` |
+| `semelle_clp` | `DA/Fondations/CLP_SEMELLES FND.pdf` |
+| `poutre_clp` | `DA/Poutres/CLP_POUTRES.pdf` |
+
+Every parser reads only the last page and every applicable cell/support/elevation.
+Slabs currently include **six PDFs**: RDC, Tréfond and Niveaux 2, 3, 4 and 5.
+Together with the other three configured files, the DA tab processes **nine last
+pages**. PDF discovery is case-insensitive, ignores non-PDF files and directories,
+and uses a stable filename order. Separate files and levels remain separate in
+exports, even when their coordinates and reinforcement match.
+The column adapter passes `max_strips=0` to disable the CLI's two-strip test limit.
+`colonne_clp.records()` and its review JSON share the same selected, deduplicated
+cells; the other adapters reuse their existing `records()` converters. Coordinates,
+levels, layers, beam positions, bar roles, duplicate conflicts and known partial
+reinforcement remain attached to records. Raw candidates and duplicate evidence
+remain in each page's diagnostics. All page reports identify image/OCR reading.
+
+**Radiers are pending** and appear as “À venir”, not a completed extraction with
+zero results. Other projects are unavailable in this DA UI until their readers
+are connected. Missing configured files appear as unread; there is no generic
+reader fallback. The first visit starts a background worker; subsequent
+renders reattach to its job or completed result. The job key includes the dedicated parser version plus the
+selected paths, nanosecond modification times and sizes. Adding or removing a slab
+PDF changes the cache key; unrelated files do not. Regeneration clears
+only the selected project's completed DA result and reruns the four parsers.
+
+`jobs.py` launches a separate Python process, isolating PDF/OCR engines from
+Streamlit and concurrent original-plan parsing. The worker snapshots selected input
+paths, writes atomic progress JSON and a trusted local result pickle (retaining
+debug metadata) inside **`.cache/da_jobs/<job-id>/`**. Requests include their input
+stamp and process identities are stored in `process.json`. On module reload or
+server restart, the manager recovers live workers and completed results from disk.
+A filesystem lock serializes discovery/start across managers and servers, preventing
+duplicate processes. It never calls Streamlit and is independent of `st.cache_data`.
+A one-second Streamlit
+fragment polls the current filename and elapsed time and displays the result when
+ready. Navigation does not cancel or submit another job. At most one active run
+per project exists, even if inputs change or regeneration is requested mid-run.
+
+Completed-file checkpoints live in `.cache/da_jobs/file_results/`. Each key includes
+parser version, type, absolute source path, nanosecond timestamp and size. Checkpoints
+preserve records and full page diagnostics; atomic writes are flushed to disk.
+An interrupted run retries only unfinished/changed files and merges the saved
+records with newly parsed files. A failed run's explicit retry reuses checkpoints;
+all new jobs resume by default, including a rebuilt job after registry invalidation.
+Only explicit full regeneration (`reparse=True`) bypasses them. Regenerating a
+completed run from its clear-cache button deliberately reparses all files. Cache clearing marks
+completed jobs invalid without deleting their saved artifacts or interrupting workers.
+An unfinished file may need parsing again after its worker stops; completed files
+and results remain on disk. Existing pre-checkpoint workers cannot gain file
+checkpoints retroactively, but their process identities can be recovered.
+
+**Required for future dashboard parsers:** use the shared `dashboard.run_da`
+checkpoint lifecycle. Save a successful PDF immediately, before starting the next;
+do not wait for the project to finish. The worker persists `saved_files` and
+`checkpoint_hits` in `state.json` only after the file result is committed. A failed
+run's **Reprendre la génération** button keeps completed files, checks their
+fingerprints, and parses only missing/changed/corrupt entries. Bump `PARSER_VERSION`
+when extraction logic changes. A PDF that fails before completion restarts at its
+last page; intermediate OCR tiles are not checkpoints. Empty but successfully
+parsed pages are cached with their explicit `no_callouts` report.
+
+The **Comparaison** section reads already loaded results without invoking any
+parser. `CLP_comparaison.json` contains one row per type/level/layer/element group:
+`status`, `reason`, `plan`, `atelier`, unmatched reinforcement on each side, and
+`plan_sources`/`atelier_sources` with original filenames/pages/coordinates/debug.
+Statuses are `same`, `changed`, `missing_plan`, `missing_da`, `review`, and
+`out_of_scope`. Normalization aligns foundation/RDC aliases and accents; no data
+from one parser fills gaps in the other. Unsupported levels/layers remain visible
+as out of scope, and beam agreement still requires spatial review.
+
+Regeneration is disabled during a run; clearing caches preserves active jobs.
+Completed results can be regenerated explicitly. Worker errors appear in the UI
+and remain attached to the job until explicit retry, preventing restart loops.
+Do not put long generation back in a Streamlit cached function, call Streamlit
+from a worker, or pass UI layout closures to a background callback. Only the UI
+polling fragment may render progress.
+
+**UI final output:** the `elements_atelier.json` download, named
+`CLP_elements_atelier.json`, contains the combined Appendix-A records. Optional
+unknown bar attributes may be null under that contract; blank/unlocated rows are
+excluded. Individual standalone review JSON formats below keep optional unknown
+fields omitted. The ZIP includes records, CSV tables and the parser/input manifest.
+
+Future uploads should provide `run_da(project_dir, inputs={type: PDF_path, ...})`;
+each type can also receive a sequence, e.g. `inputs={"dalle": [PDF_path, ...]}`.
+The explicit mapping replaces file selection without changing layout parsers or
+the record contract. Keep each new project/type parser explicitly registered;
+never route an unfamiliar format through a CLP reader because its folder matches.
+
+Integration verification: **51 focused tests passed**, including all four actual
+record adapters, UI tables/download serialization, last-page selection, complete
+column-strip selection and section cache regeneration. A separate live run on
+**one** semelle PDF through the dashboard runner produced **80 unique footings /
+160 directional entries**, removed five repeats and passed Appendix-A validation
+in 20.54 seconds. Hidden-text/vector extraction was forbidden during that run.
+This verifies one real input and all adapter wiring, not a fresh OCR run of all four
+files together. The smoke artifact is `out/CLP/elements_atelier_semelle_smoke.json`.
+
+Background-job verification: **57 focused tests passed**, including blocked-run
+navigation, active-job preservation during cache clearing, retry behavior and a
+real subprocess launch. One live semelle file run in that independent worker
+produced **80 footings / 160 directional entries** in 37.11 seconds while tests
+ran concurrently. Active and completed requests reattached to the same job.
+Its schema-valid artifact is `out/CLP/elements_atelier_semelle_background_smoke.json`.
+
 ## Shared strategy
+
+**Defensive review policy:** prefer detecting potential issues to suppressing uncertain
+findings. Flag missing plan counterparts, absent specifications, ambiguous matches
+and delegated external references for human review. Explain the uncertainty and
+distinguish confirmed value differences from potential discrepancies, but do not
+automatically clear a flag because an external drawing might explain it. In CLP,
+K-9/K-10/J-9/J-10 remain flagged despite the crane-base subcontractor note; L-13
+remains a confirmed reinforcement difference. Only proven repeated observations
+are removed, with their evidence retained in diagnostics.
 
 Read the drawing as an image, identify the layout, read small relevant regions with
 local OCR, and use deterministic code to parse the resulting text. Each parser knows
@@ -42,19 +172,256 @@ Normal parsing uses rendered pixels, not the PDF's text or vector paths. With
 `--check`, an explicit oracle function reads the PDF's hidden text **after the OCR
 result has been computed**. This is a validation path, not a fallback reader.
 
+## CLP beam elevations: `poutre_clp.py`
+
+Read **one PDF, last page only**, default `CLP/DA/Poutres/CLP_POUTRES.pdf`.
+The long outlined elevation rectangles are beams; grey blocks are supports and
+small squares below the elevations are stirrup-zone symbols. An elevation title
+such as `P100` identifies a beam. Its own circles supply positions such as
+`17 → 16 → 15` or `L → K`; preserve fractional labels and separate repeated views.
+The original S-300 parser previously produced 177 reinforcement callouts, not
+177 beams. The corrected right-margin handling produces 187 callouts in 27 beams.
+
+**Shared saved representation (plan and DA): one record per beam view**, identified
+by source, file, sheet/page, level, view and beam mark. `armature` contains all
+reinforcement entries for that beam using the same Appendix-A fields on both
+sides (`quantite`, `diametre`, `espacement_mm`, `longueur_mm`, `repere`). Counts
+therefore mean **27 plan beams / 187 entries** and **20 DA beams / 162 entries**.
+The UI displays beam and reinforcement-entry counts separately. Never sum equal
+entries across zones: two identical bar specifications at distinct positions
+must stay as two entries.
+
+`l2c.beam_records.align_beam_records()` provides the shared normalization. In
+internal/debug data, `roles` and `annotations` align one-to-one with `armature`.
+Each annotation retains its role, raw label, source position/bounding box and
+confidence; plan grouping preserves each original callout's ID. Beam-level data
+retains the section, circled axes and position string. Unknown locations are not
+combined, and different pages/levels/views remain separate. Debug evidence is
+available in comparison JSON; canonical downloads keep the Appendix-A schema.
+
+Existing trusted result/checkpoint pickles are upgraded atomically without OCR.
+The DA extraction version/cache keys stay unchanged because this is a storage
+change. Legacy grouped DA records that lack individual bar positions leave those
+positions unknown rather than borrowing the whole beam's location. New DA reads
+retain the observed bar boxes. The original plan pipeline version advances so
+fresh plan exports and UI counts use grouped beams.
+
+Aligned canonical review files: `out/CLP/poutres_plan.json` and
+`out/CLP/poutres_atelier.json`; both use the same record structure. The standard
+downloads remain `CLP_elements_plan.json` / `CLP_elements_atelier.json`.
+
+Detect text in overlapping image tiles, join fragments before recognition, and
+retry incomplete bar labels in small horizontal crops. Short numeric zone counts
+must be recognised upright: rotating a narrow `6` can produce an incorrect `9`.
+Read quantities, Canadian diameters, fabrication marks, lengths and spacings with
+the shared grammar. Preserve longitudinal, skin and stirrup roles, distinct zones,
+and separate inside/outside face bars. Shared support labels can be relevant to
+neighbouring beam comparisons without changing their blind source assignment.
+
+Some stirrup definitions supply a **group total**, such as `29 10M 10TT21X35 @18"`
+for P101/P102 together. Detect the tiny square zone symbols and read their local
+quantities. Associate them with an observed definition using the leader baseline
+and stirrup dimensions relative to the beam section. Keep the group total and its
+source box in diagnostics; never assign that total to each beam. Unresolved
+symbols and unread spacings remain review issues rather than invented values.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.poutre_clp \
+  --check --annotated out/poutre_clp_review.pdf \
+  --compare-plan "$HOME/Downloads/l2c-participants/CLP/L2C_PLAN_STR_CLP.pdf"
+```
+
+**Final DA file to review: `out/poutre_clp_output.json`.** A JSON array with one
+populated beam per mark/page, `position`, observed `axes`, `section`, reinforcement
+entries with roles and count–diameter `formatted` values, and status/confidence.
+Null/empty rows are removed; exact repeated observations are deduplicated with
+provenance retained. Equal bar specifications in distinct zones stay separate.
+Current results remain partial while coverage/leader ownership requires review.
+
+Other artifacts:
+
+- `out/poutre_clp_plan_output.json`: grouped original beams, positions and specs.
+- `out/poutre_clp.json`: Appendix-A DA records; beam marks remain the identifiers.
+- `out/poutre_clp_diagnostics.json`: raw OCR, circles, source regions, shared
+  stirrup definitions, zone counts, unresolved symbols, timing and deduplication.
+  `--check` adds hidden-text checks **after** extraction; it never fills output.
+- `out/poutre_clp_comparison.json`: original count/diameter/spacing coverage
+  against spatially aligned DA annotations. Separate face bars may form a pair;
+  shared support labels may live under a neighbouring beam. These are coverage
+  checks, not a complete engineering conformity verdict. Missing beams, unknown
+  zones, extra steel and dimension revisions require human review.
+- `out/poutre_clp_review.pdf`: annotated **last page only**.
+
+The original has 27 titled beams and this DA sheet has 20. P200/P201/P300/P301/
+P400/P401/P500 are absent from this file and remain flagged. Never manufacture
+those entries to make the counts equal. The DA dashboard uses this reader;
+original-plan and DA axis positions appear in their detail columns.
+
+Verified with a fresh full run on that one DA file's last page: **20 beams / 162
+reinforcement entries**, including **38 resolved generic stirrup zones**, with no
+unresolved zone symbols. The post-OCR source checks pass **162/162** for their
+documented count/diameter/spacing scope; the full run took **243.58 seconds**.
+The comparison locates **150/152** original specifications across the 20 shared
+beams. P112 and P116 retain unresolved spatial matches, nine DA annotations
+remain unmatched, and the seven absent beams stay flagged. P112 has a 2-25M
+support annotation where the original shows 2-20M; P116 has the same 2-20M value
+at a shifted label position. Follow the actual leaders before clearing either.
+See `out/poutre_clp_comparison.md` for the readable report. Forty-six focused
+tests pass; the original plan still passes all six answer-key checks.
+
+The dashboard's plan cache includes the pipeline version, so this parser revision
+regenerates its plan data. The per-section clear-cache buttons remain available.
+
+## CLP isolated footings: `semelle_clp.py`
+
+Read **one PDF, last page only**. The default file is
+`CLP/DA/Fondations/CLP_SEMELLES FND.pdf`; radiers and continuous wall footings are
+separate element types and are not extracted by this module.
+
+The drawing supplies a type schedule headed **Nomenclature des semelles isolées**.
+Read its type column and its **LONGITUDINALE / TRANSVERSALE** columns once. Detect
+hexagonal type markers inside the grey footing squares, then link each marker to
+that schedule. Values are read from the drawing, never hardcoded by type. Keep both
+directions even when they match: type D reads `7-25M · 7-25M`, while type F reads
+`8-25M · 10-25M`. Goujons and column ties are not footing directional reinforcement.
+
+Reuse the slab parser's grid bubbles and independent viewports. Recover interrupted
+circle arcs from pixels and OCR their labels; fractional axes such as `12.7` and
+`G.5` stay intact. The detached foundation inset has one numeric strip and a stepped
+letter strip. Its coordinates retain a separate `view` identifier.
+
+The marker sits below/right of its footing centre. Locate an isolated grey square
+or a compact column symbol, and associate its measured position with the grid.
+Large grey radiers are excluded from the square detector. Narrow wall connections
+are removed before detecting isolated squares. Missing labels, unresolved geometry,
+conflicting definitions and duplicate typed associations remain in diagnostics.
+Never copy one directional value to fill a missing direction.
+
+Some dimensions erase part of a hexagon with an opaque white text background.
+The detector also recognises its remaining chevron and caps, excluding dense
+hatching. A label crossing a grid line gets a bounded crop retry. Long pedestal
+segments supply independent anchors at every grid row they cross; lower-left
+markers are supported as well as lower-right markers.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.semelle_clp \
+  --check --annotated out/semelle_clp_review.pdf
+# Small experiment on the same file's last page:
+PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.semelle_clp \
+  --coordinate M-14.4 --output-json out/semelle_clp_sample.json \
+  --diagnostics out/semelle_clp_sample_diagnostics.json \
+  --json out/semelle_clp_sample_records.json
+```
+
+**Final file to review: `out/semelle_clp_output.json`.** This is a JSON array with
+one populated footing per viewport/grid coordinate. Empty, unlocated and unresolved
+duplicate rows are excluded; optional unknown fields are omitted. Known partial
+reinforcement can be exported with `status="partial"`. Example:
+
+```json
+{
+  "fichier": "CLP_SEMELLES FND.pdf",
+  "page": 1,
+  "niveau": "FONDATION",
+  "view": "view-1",
+  "coordinate": "M-14.4",
+  "type": "D",
+  "summary": "7-25M · 7-25M",
+  "reinforcement": [
+    {"role": "LONG", "formatted": "7-25M", "quantite": 7, "diametre": "25M"},
+    {"role": "TRAN", "formatted": "7-25M", "quantite": 7, "diametre": "25M"}
+  ],
+  "status": "read",
+  "confidence": 0.99
+}
+```
+
+Other files: `out/semelle_clp.json` holds Appendix-A `type_element="semelle"`
+records; `out/semelle_clp_diagnostics.json` holds every candidate, the type catalog,
+raw OCR, source boxes, timing and unread reasons. `--check` adds type-label and
+schedule count/diameter comparisons using hidden text **after** blind extraction.
+Its diagnostic `validation` object also reports marker-label coverage and unmatched
+source labels; those labels never supply missing output values. These checks validate
+type transcription and schedule values, not an independent coordinate truth set.
+The optional `out/semelle_clp_review.pdf` contains only the source's last page, with
+marker-to-anchor links. The dashboard uses this same reader for semelles.
+
+Verified on that single file's last page: **85 populated annotations / 170 directional
+entries**, all 85 source type labels located and all 14 schedule quantity/diameter
+cells matching the optional validation oracle. The final run took 35.56 seconds
+while tests ran concurrently; 32 focused tests passed. Eight extra image candidates
+are excluded from the final JSON and retained in diagnostics.
+
+Cross-referencing original S-100 shows that **five annotations are repeated inset
+details**, so there are 80 distinct footing locations after view correspondence.
+Inset `Q-5` repeats main `G-5` despite using a literal Q label. Seven additional
+coordinate differences refer to the same marker positions across the drawings.
+Keep these correspondences in comparison results; never use original-plan values
+to change the blind DA extraction. Five DA locations are absent from the original
+parser's 75 records: `K-9`, `K-10`, `J-9`, `J-10`, `A-6`. The first four occupy the
+original crane-base radier area; A-6 is an original-parser grid-bubble false positive.
+L-13 also differs in reinforcement: original `9-25M · 9-25M`, DA
+`11-25M · 11-25M`. The generated comparison is `out/semelle_clp_comparison.md`,
+with full JSON evidence and an annotated one-page PDF beside it.
+
 ## Shared building blocks
+
+### Required output rule: remove repeated entries
+
+**Every current and future parser must deduplicate all final exports**, including
+review JSON, Appendix-A records and saved summaries. Columns, slabs and isolated
+footings share `output.py`; diagnostics keep every source cell/marker/callout.
+
+An element's identity includes project, source (`plan`/`atelier`), element type,
+source file, grid coordinate, storey/level and
+reinforcement layer. Identical reinforcement means the same roles, counts,
+diameters, spacing, lengths and marks; OCR wording, confidence, page/view and
+bounding boxes do not make a repeated observation a new element. Keep different
+coordinates, storeys, layers and independent drawings separate. Equal longitudinal
+and transverse bars remain **two directional entries** inside the retained element.
+Project/source/type are implicit in the current CLP standalone modules; any shared
+cross-project exporter must include them explicitly. Never deduplicate a plan
+record against a DA record: they are the two sides of the comparison.
+
+Repeated viewports require geometric evidence: at least three shared numeric axes
+and three shared letter axes must agree on the view translation. Match alternative
+axis labels by their observed positions only after establishing that alignment.
+For example, the footing inset's literal `Q-5` matches main `G-5`. This is inferred
+from the DA's axes, without reading the original structural plan or hardcoding Q/G.
+Unaligned viewports remain independent; never remove a different element just
+because its reinforcement is the same.
+
+Prefer a main-view observation for aligned grid details; otherwise prefer the
+complete/highest-confidence read (columns also prefer observed storey labels).
+Every suppressed occurrence is recorded under diagnostic `deduplication.duplicates`,
+with the kept and suppressed coordinates/views. `removed_rows` reports the count;
+`view_correspondences` records the geometric mapping where applicable. Filtering
+happens at export time, so unread/raw evidence and validation coverage survive.
+
+**Different reinforcement at one identity is a conflict, not a duplicate.** Preserve
+the alternatives, set `duplicate_conflict=true`, explain the conflict, and mark a
+previously read record partial. The conflict also appears under diagnostic
+`deduplication.conflicts`. Never choose an expected original-plan value to erase
+a mismatch: L-13's original `9-25M · 9-25M` and DA `11-25M · 11-25M` remain distinct
+source records and a real comparison discrepancy.
+
+The final CLP footing JSON now has **80 unique entries / 160 directional entries**,
+down from 85 annotation rows. The five repeated inset observations remain in
+diagnostics; a coordinate-limited inset run retains its literal coordinate if no
+main-view occurrence is present.
 
 | Component | Responsibility |
 |---|---|
-| `colonne_clp._ocr()` | Cached local RapidOCR engine and configurable CPU thread budget. Currently reused by both parsers. |
+| `colonne_clp._ocr()` | Cached local RapidOCR engine and configurable CPU thread budget. Reused by all three parsers. |
 | `colonne_clp.render()` | Display-list rendering cached for the column parser. |
-| `imageread.PageImage` | Reusable page renderer used by the slab parser. |
+| `imageread.PageImage` | Reusable page renderer used by the slab and footing parsers. |
 | `imageread.TextLine` | Text, bounding box, orientation and confidence. |
 | `imageread._join()` | Joins overlapping detector fragments before whole-grid recognition. |
 | `imageread.remove_rules()` | Removes long drawing strokes from recognition crops; text strokes remain. |
 | `da.common.parse_bar_line()` | Quantity, diameter, mark, spacing and length grammar, including bounded OCR repairs. |
 | `units.py` | Closed bar vocabulary and conversion to millimetres. |
 | `model.py` | Validated reinforcement entries and Appendix-A output records. |
+| `parsers.output` | Shared repeated-entry filtering, reinforcement signatures, viewport correspondence and duplicate/conflict provenance. |
 
 Detection runs at a moderate resolution. Recognition re-renders each line at a
 higher resolution, rather than running expensive OCR over a huge high-resolution
@@ -74,6 +441,18 @@ The column drawing is a schedule:
 - Each horizontal band represents a storey, labelled beside the table.
 - A data cell contains reinforcement for that coordinate and storey.
 
+Both original-plan and DA column records already use the same unit: one coordinate
+and storey, with all that cell's reinforcement in `armature`. Current cached
+last-page-only coverage is **92 DA records / 19 grid coordinates**, compared with
+**395 original-plan records / 100 coordinates**. This is a coverage gap, not the
+beam callout-versus-element mismatch. Partie 1/2 are older releases; the last pages
+of Partie 2/3 repeat the same coordinates. Do not concatenate these releases to
+inflate coverage. Reading the rest of Partie 3 requires changing the user's
+last-page-only policy explicitly. No additional pages are read without that change.
+Paired current exports: `out/CLP/colonnes_plan.json` and
+`out/CLP/colonnes_atelier.json`; `out/CLP/colonnes_coverage.json` retains the
+scope/counts, level distributions and source-backed comparison findings.
+
 The parser finds families of long vertical rules with common extents, then horizontal
 rules crossing those families. It reads bottom coordinate cells, the storey-label
 strip, and finally the data cells.
@@ -92,9 +471,11 @@ PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.colonne_clp \
   FILE.pdf --page 4 --check --max-strips 0
 ```
 
-The default input is CLP Partie 3, page 1. **The default strip limit is currently 2**
-for quick experiments; use `--max-strips 0` for every strip. `--all-pages` reads every
-column-schedule page. Optional worker processes each open their own PDF and OCR engine.
+The standalone CLI default input is CLP Partie 3, page 1. **Its default strip limit
+is currently 2** for quick experiments; use `--max-strips 0` for every strip.
+The dashboard always reads the last page and all strips. `--all-pages` reads every
+column-schedule page in the standalone CLI. Optional worker processes each open their
+own PDF and OCR engine.
 
 ## CLP slabs: `dalle_clp.py`
 
@@ -256,7 +637,10 @@ transcription inside the selected regions, not complete engineering corresponden
 
 `out/colonne_clp.json` contains saved cell summaries with coordinate, storey, elevation,
 raw lines and confidence. `--all-cells-json` adds every cell and its diagnostic state.
-This experimental output differs from the slab parser's Appendix-A records.
+Final summaries are sanitized and deduplicated per coordinate/storey. The default
+`out/colonne_clp_diagnostics.json` retains all cells plus duplicate/conflict evidence.
+This review output differs from Appendix-A records. The dashboard adapter uses
+`colonne_clp.records()` to export the same retained cells through Appendix A.
 
 Coordinates and boxes use PDF points from the top-left after rotation normalisation.
 For Appendix-A records, `x` and `y` identify the annotation centre; the support's
@@ -292,8 +676,9 @@ For a new format:
    vertical text, missing labels, partial reads and duplicate associations.
 5. Run the complete intended file set without exploratory limits. Report extraction
    coverage, unread cases and measured transcription agreement separately.
-6. Integrate the proven reader into `da.pipeline` behind its existing record/diagnostic
-   contract. These standalone modules are **not yet the dashboard's reader path**.
+6. Integrate the proven reader into `da.dashboard` behind its existing record/diagnostic
+   contract and add its explicit project/file configuration. The four current CLP
+   parsers already use this dashboard path.
 
 Keep drawings and generated evidence out of version control. Runtime processing is
 local; do not add cloud OCR or external model APIs.

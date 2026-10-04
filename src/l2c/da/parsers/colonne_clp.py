@@ -43,6 +43,8 @@ if __package__ in (None, ""):                      # allow `python colonne_clp.p
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from l2c.da.common import parse_bar_line  # noqa: E402
+from l2c.da.parsers.output import deduplicate, reinforcement_key  # noqa: E402
+from l2c.model import Armature, Debug, ElementRecord  # noqa: E402
 
 log = logging.getLogger("colonne_clp")
 
@@ -677,6 +679,54 @@ def _print_cell(c: Cell, check: bool) -> None:
         print(f"DISCARDED  {where} {c.reason}   [read: {' / '.join(c.lines) or '-'}]{extra}", flush=True)
 
 
+def _output_rows(cells: list[Cell], filename: str = "") -> tuple[list[dict], dict]:
+    """Located summaries only, one observation per coordinate/storey/specification."""
+    candidates = []
+    for index, c in enumerate(cells):
+        if not c.summary or not c.coordinate:
+            continue
+        candidates.append(dict(index=index, page=c.page, coordinate=c.coordinate,
+            storey=c.level, storey_inferred=c.storey_inferred, elevation=c.elevation,
+            summary=c.summary, x=round((c.x0+c.x1)/2,1), y=round((c.y0+c.y1)/2,1),
+            confidence=c.confidence, lines=c.lines,
+            reinforcement=[dict(b, role=b.get("label")) for b in c.bars]))
+    selected, report = deduplicate(candidates,
+        identity=lambda row:(filename,row["coordinate"],row.get("storey") or f"page-{row['page']}"),
+        signature=lambda row:(row.get("elevation"),reinforcement_key(row["reinforcement"]),row["summary"]),
+        quality=lambda row:(not row["storey_inferred"],row.get("confidence") or 0))
+    return selected, report
+
+
+def clean_output(cells: list[Cell], filename: str = "") -> tuple[list[dict], dict]:
+    selected, report = _output_rows(cells, filename)
+    # Internal indexes and signatures belong to diagnostics, not the review schema.
+    return [{k:v for k,v in row.items() if k not in ("index","reinforcement") and v is not None}
+            for row in selected], report
+
+
+def records(cells: list[Cell], filename: str) -> list[ElementRecord]:
+    """The dashboard uses exactly the same selected cells as the review JSON."""
+    selected, _ = _output_rows(cells, filename)
+    output = []
+    for index, row in enumerate(selected, 1):
+        cell = cells[row["index"]]
+        feuillet = f"{os.path.splitext(filename)[0]} p{cell.page}"
+        output.append(ElementRecord(
+            id=f"{filename}_{cell.page}_{cell.coordinate}_{cell.level or 'unknown'}_{index}_atelier",
+            source="atelier", fichier=filename, feuillet=feuillet, page=cell.page,
+            x=row["x"], y=row["y"], type_element="colonne", element=cell.coordinate,
+            armature=[Armature(**{k: b[k] for k in Armature.model_fields if k in b})
+                      for b in cell.bars],
+            debug=Debug(raw=cell.lines, confidence=cell.confidence if cell.confidence is not None else 0.,
+                        decode_path="ocr", tier=3, locator_kind="grid", niveau=cell.level,
+                        symbol_bbox=(cell.x0, cell.y0, cell.x1, cell.y1),
+                        roles=[b.get("label") for b in cell.bars],
+                        storey_inferred=cell.storey_inferred, elevation=cell.elevation,
+                        duplicate_conflict=row.get("duplicate_conflict", False),
+                        reason=row.get("reason") or cell.reason)))
+    return output
+
+
 def main(argv=None) -> int:
     global OCR_THREADS
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -687,6 +737,8 @@ def main(argv=None) -> int:
     ap.add_argument("--json", default="out/colonne_clp.json",
                     help="where the SAVED results go (default out/colonne_clp.json)")
     ap.add_argument("--all-cells-json", help="also dump every cell, saved or not, for debugging")
+    ap.add_argument("--diagnostics", default="out/colonne_clp_diagnostics.json",
+                    help="all source cells and duplicate/conflict evidence")
     ap.add_argument("--quiet", action="store_true", help="step logs only, no per-cell logs")
     ap.add_argument("--workers", type=int, default=1,
                     help="parallel OCR processes (default 1; measured: 6 was only ~20%% faster)")
@@ -695,6 +747,9 @@ def main(argv=None) -> int:
     ap.add_argument("--max-strips", type=int, default=MAX_STRIPS,
                     help=f"TEMPORARY: parse only the first N data strips (default {MAX_STRIPS}, 0 = all)")
     args = ap.parse_args(argv)
+    paths = [os.path.realpath(p) for p in (args.json,args.diagnostics,args.all_cells_json) if p]
+    if len(set(paths)) != len(paths) or os.path.realpath(args.file) in paths:
+        ap.error("input and all output paths must differ")
     OCR_THREADS = max(1, args.threads)
     try:
         os.nice(10)                    # low priority: the desktop always comes first
@@ -720,13 +775,14 @@ def main(argv=None) -> int:
         print(f"CHECK    {ok}/{len(saved)} saved summaries equal the hidden layer's; "
               f"{lost} discarded cells did have a summary in the hidden layer")
     os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
+    output, report = clean_output(cells, os.path.basename(args.file))
     with open(args.json, "w", encoding="utf-8") as fh:
-        json.dump([{"page": c.page, "coordinate": c.coordinate, "storey": c.level,
-                    "storey_inferred": c.storey_inferred, "elevation": c.elevation,
-                    "summary": c.summary, "x": round((c.x0 + c.x1) / 2, 1),
-                    "y": round((c.y0 + c.y1) / 2, 1), "confidence": c.confidence,
-                    "lines": c.lines} for c in saved], fh, ensure_ascii=False, indent=2)
-    print(f"wrote {len(saved)} saved results -> {args.json}")
+        json.dump(output, fh, ensure_ascii=False, indent=2)
+    os.makedirs(os.path.dirname(args.diagnostics) or ".", exist_ok=True)
+    with open(args.diagnostics, "w", encoding="utf-8") as fh:
+        json.dump(dict(cells=[asdict(c) for c in cells], deduplication=report),
+                  fh, ensure_ascii=False, indent=2)
+    print(f"wrote {len(output)} unique results -> {args.json}; {report['removed_rows']} repeats removed")
     if args.all_cells_json:
         with open(args.all_cells_json, "w", encoding="utf-8") as fh:
             json.dump([asdict(c) for c in cells], fh, ensure_ascii=False, indent=2)

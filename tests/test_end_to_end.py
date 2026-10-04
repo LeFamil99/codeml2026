@@ -18,13 +18,13 @@ from l2c.pipeline import run_plan
 
 #: measured on the whole plan set (2026-10-03); floors sit ~5% under the measurement
 EXPECTED = {
-    "CLP":     {"min_records": 1925, "min_located_pct": 99.0, "units": "imperial"},
-    "WP2":     {"min_records": 3475, "min_located_pct": 99.0, "units": "metric"},
-    "LIGREP":  {"min_records": 2455, "min_located_pct": 95.0, "units": "metric"},
-    "EspCa3B": {"min_records": 2160, "min_located_pct": 99.0, "units": "metric"},
+    "CLP":     {"min_observations": 1925, "min_located_pct": 99.0, "units": "imperial"},
+    "WP2":     {"min_observations": 3475, "min_located_pct": 99.0, "units": "metric"},
+    "LIGREP":  {"min_observations": 2455, "min_located_pct": 95.0, "units": "metric"},
+    "EspCa3B": {"min_observations": 2160, "min_located_pct": 99.0, "units": "metric"},
 }
 
-#: per-type record counts measured on the whole plan set (radier: LIGREP has none)
+#: Historical observation counts; poutre counts are armatures within beam records.
 MEASURED_BY_TYPE = {
     "CLP":     {"radier": 74, "semelle": 75, "poutre": 177, "mur_refend": 80,
                 "colonne": 395, "dalle": 1226},
@@ -46,7 +46,8 @@ def results(corpus):
 def test_extracts_expected_volume(results, project):
     r = results[project]
     exp = EXPECTED[project]
-    assert len(r.records) >= exp["min_records"], f"{project}: extraction regressed"
+    volume = sum(len(x.armature) if x.type_element == "poutre" else 1 for x in r.records)
+    assert volume >= exp["min_observations"], f"{project}: extraction regressed"
 
 
 @pytest.mark.parametrize("project", PROJECTS)
@@ -54,7 +55,8 @@ def test_every_element_type_is_extracted(results, project):
     """The whole plan set, not just columns: each type present in the project is read."""
     got: dict[str, int] = {}
     for x in results[project].records:
-        got[x.type_element] = got.get(x.type_element, 0) + 1
+        count = len(x.armature) if x.type_element == "poutre" else 1
+        got[x.type_element] = got.get(x.type_element, 0) + count
     for kind, n in MEASURED_BY_TYPE[project].items():
         assert got.get(kind, 0) >= 0.9 * n, f"{project}/{kind}: {got.get(kind, 0)} < 90% of {n}"
 
