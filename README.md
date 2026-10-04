@@ -1,291 +1,410 @@
-# L2C Review — rebar shop-drawing verification
+# L2C Review — vérification des dessins d'atelier d'armature
 
-Design document: **[PLAN.md](PLAN.md)** (measured evidence, architecture, open questions).
+Outil local, en Python, qui lit les **plans de structure L2C** et les **dessins
+d'atelier (DA)** du fabricant d'armature, en extrait chaque élément armé avec son
+feuillet et sa position X/Y, produit une base JSON conforme à l'annexe A des consignes,
+puis compare les deux côtés pour faire ressortir les écarts à réviser.
 
-## Status: plan side complete, shop drawings next
+Tout s'exécute sur le poste : aucun service infonuagique, aucune API d'IA externe.
 
-| | |
+| Document | Contenu |
 |---|---|
-| ✅ | Plan-side extraction of **every element type**, all four dev projects |
-| | radier (S-050/060) · semelles (S-100) · poutres (S-300) · murs de refend (S-400) · colonnes (S-500) · dalles (S-600) |
-| ✅ | Grid locator from the drawn grid **lines** (`K-6`, `J-10.8`, `B.2-35`), correct on multi-view sheets |
-| ✅ | Wall locator `élévation B - RDC @ 2`, beam locator = beam mark (`P108`) |
-| ✅ | **6/6** answer-key rows (`CLP_dismatch.xlsx`) derived from the plan — `make truth` |
-| ✅ | Appendix-A conformant **JSON** + run manifest, deterministic, unique ids |
-| ✅ | **Web dashboard**: pick one project folder → run → inspect → download |
-| 🟡 | **Dessins d'atelier** tab: five CLP image parsers connected; complete column and radier files, existing last-page readers for slabs, footings and beams; other projects pending. Details in **[DA_PLAN.md](DA_PLAN.md)** |
-| ⬜ | Plan ↔ atelier matching and non-conformity classification |
-| ⬜ | PDF report |
+| **README.md** (ce fichier) | architecture, installation, exécution, hypothèses, limites |
+| [PLAN.md](PLAN.md) | document de conception : mesures sur le corpus, choix d'outils, risques |
+| [DA_PLAN.md](DA_PLAN.md) | plan de travail et journal d'avancement du côté dessins d'atelier |
+| [src/l2c/da/parsers/README.md](src/l2c/da/parsers/README.md) | stratégie des parseurs DA et contrats de sortie JSON |
 
-Sheets with no element reinforcement (typical details, general-arrangement plans) are
-reported as `skipped` with the reason — never counted as zero findings.
+## État d'avancement
 
-## Quick start
+| | Volet | Portée |
+|---|---|---|
+| ✅ | Extraction côté **plan** | Les six types d'éléments (radier, semelle, poutre, mur de refend, colonne, dalle), sur les quatre projets de développement |
+| ✅ | Localisation | Grille lue à partir des **lignes** d'axe dessinées (`K-6`, `J-10.8`, `B.2-35`), correcte sur les feuillets à plusieurs vues ; murs par élévation (`élévation B - RDC @ 2`), poutres par repère (`P108`) |
+| ✅ | Base **JSON** annexe A | Validée par Pydantic, déterministe, identifiants uniques, manifeste d'exécution |
+| ✅ | Clé de réponse CLP | 6/6 lignes de `CLP_dismatch.xlsx` retrouvées côté plan (`l2c truth`) |
+| ✅ | **Tableau de bord** web | Choisir un projet → extraire → inspecter → télécharger |
+| 🟡 | Extraction côté **DA** | **CLP seulement** : colonnes, dalles, semelles, poutres, radiers, lus par OCR sur l'image de la page |
+| 🟡 | **Comparaison** plan ↔ DA | CLP, cinq types ; c'est une comparaison de lectures, pas un verdict de conformité certifié |
+| ⬜ | DA des autres projets | WP2, LIGREP, EspCa3B : non branchés au tableau de bord |
+| ⬜ | Murs de refend côté DA | Aucun lecteur |
+| ⬜ | Rapport PDF | Non réalisé (`src/l2c/report/` est vide) |
 
-```bash
-make install     # create the venv, install everything
-make doctor      # check the environment and that the corpus is visible
-make ui          # launch the dashboard on http://localhost:8501
+## Architecture
+
+```
+  dossier d'un projet
+  ├── L2C_PLAN_STR_<projet>.pdf ──► page.py ──► parse/<type>.py ──► ElementRecord (source="plan")
+  │      (PDF vectoriel,             coordonnées      + geometry/                     │
+  │       couche texte)              normalisées      (grille, symboles)              │
+  │                                                                                   ▼
+  └── DA/<type>/*.pdf ──► da/parsers/<type>_clp.py ──► ElementRecord (source="atelier")
+         (lus comme des       rendu en image + OCR                                    │
+          images)             (RapidOCR / ONNX, CPU)                                  ▼
+                                                                    record_formats.py  (même sens des
+                                                                    champs des deux côtés)
+                                                                                      │
+                                              ┌───────────────────────────────────────┤
+                                              ▼                                       ▼
+                                   io_json.py : elements_plan.json,          comparison.py :
+                                   elements_atelier.json, run_manifest.json  comparaison.json
 ```
 
-On Windows (no `make`; needs [uv](https://docs.astral.sh/uv/)):
+### Modules
+
+| Chemin | Rôle |
+|---|---|
+| `src/l2c/page.py` | Préparation des pages. Corrige une fois pour toutes les deux pièges de coordonnées (origine de MediaBox non nulle, `/Rotate 90`) et lit le numéro et le type de feuillet. Seul module autorisé à appeler `get_text` / `get_drawings`. |
+| `src/l2c/pipeline.py` | Orchestration côté plan : classe chaque feuillet et l'envoie au parseur de son type. Les feuillets sans armature sont rapportés `skipped` avec la raison. |
+| `src/l2c/parse/` | Un parseur de plan par type d'élément (`columns`, `footings`, `radier`, `beams`, `walls`, `slabs`, `slab_integrity`). |
+| `src/l2c/geometry/` | Grille d'axes à partir des lignes (`gridlines.py`), convention d'axes par projet (`grid.py`), détection des symboles et auto-calibration de l'échelle (`symbols.py`). |
+| `src/l2c/units.py` | Unique point de conversion impérial/métrique vers les millimètres ; vocabulaire fermé des barres (`10M` … `55M`). |
+| `src/l2c/model.py` | `Armature` / `ElementRecord` : le schéma de l'annexe A, validé par Pydantic. Le matériel de débogage est exclu de la sérialisation. |
+| `src/l2c/io_json.py` | Écriture et validation du JSON, manifeste d'exécution. |
+| `src/l2c/da/parsers/` | Lecteurs DA par type et par fabricant (`colonne_clp`, `dalle_clp`, `semelle_clp`, `poutre_clp`, `radier_clp`), chacun exécutable seul ; `output.py` déduplique les observations répétées. |
+| `src/l2c/da/imageread.py` | Lecture d'une page **comme image** : détection par tuiles, puis reconnaissance OCR de chaque ligne. |
+| `src/l2c/da/dashboard.py` | Lanceur DA du tableau de bord : fichiers d'entrée, points de reprise par fichier et par page. |
+| `src/l2c/da/jobs.py` | Tâches DA dans un processus séparé, registre durable sous `.cache/da_jobs/`. |
+| `src/l2c/da/{pipeline,columns,planview,beams,decode,glyphs,vision,inventory}.py` | Lecteurs antérieurs (couche texte, décodeur de glyphes vectoriels), conservés comme référence mesurée et pour `l2c truth`. Ils n'alimentent pas le tableau de bord. |
+| `src/l2c/record_formats.py`, `beam_records.py`, `column_records.py` | Mise en forme commune plan/DA : mêmes rôles, mêmes alias de niveau, mêmes champs. Normalise la représentation seulement, sans jamais combler une valeur manquante. |
+| `src/l2c/comparison.py` | Appariement et comparaison des enregistrements des deux côtés. |
+| `src/l2c/answer_key.py` | Vérification contre `*_dismatch.xlsx`, lu à l'exécution, jamais copié dans le code. |
+| `src/l2c/cli.py` | Commande `l2c` (`run`, `validate`, `truth`). |
+| `app/` | Tableau de bord Streamlit ; `views.py` contient les composants communs aux sections plan et DA. |
+| `tests/` | Suite pytest, exécutée contre le corpus réel. |
+| `notebooks/` | Exploration du corpus et démonstration complète sur les colonnes de CLP. |
+
+### Principes de conception
+
+- **Le lecteur DA lit à l'aveugle.** Il ne voit jamais la valeur attendue du plan ; il
+  produit des enregistrements, et la comparaison est du code ordinaire, dans une étape
+  séparée. Sinon un lecteur « guidé » par le plan masquerait précisément les écarts
+  recherchés.
+- **Vocabulaire fermé.** Une désignation de barre hors de `10M`…`55M` est refusée par le
+  modèle : une confusion `M`→`H` ne peut pas être sérialisée.
+- **Rien n'est masqué.** Un feuillet ou un fichier non lu est listé avec sa raison ; il
+  ne compte jamais pour « zéro élément ». Une lecture partielle garde les valeurs
+  connues et signale ce qui manque.
+- **Détection plutôt que suppression.** En cas de doute (appariement ambigu, élément sans
+  vis-à-vis, direction non résolue), l'écart reste affiché avec le statut « à réviser »
+  et ses sources. Seules les observations répétées et prouvées identiques sont
+  dédupliquées.
+- **Déterminisme.** Deux exécutions sur les mêmes fichiers donnent le même JSON, à
+  l'octet près côté plan.
+
+## Installation
+
+Prérequis : **Python ≥ 3.10** (développé sous 3.13), environ 1 Go d'espace disque pour
+l'environnement, aucun GPU requis.
+
+### Linux / macOS
+
+```bash
+make install                                # crée .venv, installe le cœur + tableau de bord + tests
+.venv/bin/pip install -e '.[da,notebook]'   # OCR des dessins d'atelier et notebook
+make doctor                                 # vérifie l'environnement et la présence du corpus
+```
+
+`make install` n'installe **pas** l'extra `da` : sans lui, la section « Dessins
+d'atelier » et les parseurs DA ne fonctionnent pas.
+
+### Windows
+
+Nécessite [uv](https://docs.astral.sh/uv/).
 
 ```bat
-install.cmd      :: create .venv (Python 3.13), install everything incl. OCR extras
-ui.cmd           :: launch the dashboard on http://localhost:8501
-ui.cmd 8520      :: dashboard on another port
+install.cmd      :: crée .venv (Python 3.13) et installe tout : tableau de bord, OCR, tests, notebook
 ```
 
-`make` on its own lists every target. Override any variable inline:
+Voir la limite Windows du tableau de bord dans [Limites connues](#limites-connues).
+
+### Extras
+
+| Extra | Contenu | Requis pour |
+|---|---|---|
+| *(cœur)* | pymupdf, numpy, scipy, pillow, pydantic, reportlab, openpyxl | extraction côté plan, CLI |
+| `app` | streamlit | tableau de bord |
+| `da` | rapidocr, onnxruntime, opencv-python-headless | lecture des dessins d'atelier |
+| `dev` | pytest, pdfplumber (contre-vérification dans les tests seulement) | tests |
+| `notebook` | notebook, nbconvert, matplotlib, pandas | notebook |
+
+`requirements.txt` fige les versions exactes d'une installation de référence
+(`make freeze`).
+
+### Corpus
+
+Le corpus est confidentiel et **n'est pas dans le dépôt**. Emplacement par défaut :
+`~/Downloads/l2c-participants/`, avec un dossier par projet :
+
+```
+l2c-participants/
+└── CLP/
+    ├── L2C_PLAN_STR_CLP.pdf      plan de structure
+    ├── CLP_dismatch.xlsx         clé de réponse (CLP seulement)
+    └── DA/
+        ├── Colonnes/  Dalles/  Fondations/  Poutres/
+```
+
+Pour un autre emplacement : variable d'environnement `L2C_CORPUS` (tests, notebook),
+`make … CORPUS=/chemin`, ou simplement le chemin passé en argument à `l2c`.
+
+## Exécution
+
+### Tableau de bord
 
 ```bash
-make run PROJECT=WP2          # extract one project -> JSON + manifest
-make run-all                  # all four
-make validate-all             # check every JSON against Appendix A
-make summary                  # one-line extraction summary per project
-make truth                    # check all 6 answer-key rows against the plan extraction
-make ui PORT=8520             # dashboard on another port
-make run CORPUS=/mnt/other    # a corpus somewhere else
-make clean                    # drop generated output and caches
-make purge                    # also remove any corpus copy under the repo (consignes S4)
+make ui                 # http://localhost:8501
+make ui PORT=8520
 ```
 
-Equivalent bare commands, if you prefer:
+Dans la barre latérale, indiquer le dossier d'un projet (ou du corpus, puis choisir le
+projet), ou téléverser l'archive ZIP d'un projet. Trois sections :
+
+1. **Plan L2C** — extraction de tous les types, tableaux, diagnostics par feuillet,
+   téléchargement de `elements_plan.json`.
+2. **Dessins d'atelier** — lance la lecture OCR des DA dans un processus d'arrière-plan.
+   On peut changer de section ou rafraîchir la page : la tâche continue. Chaque PDF
+   terminé est sauvegardé ; après un arrêt, **Reprendre la génération** ne relit que les
+   fichiers manquants. Téléchargement de `elements_atelier.json`.
+3. **Comparaison** — disponible une fois les deux côtés chargés ; ne lance jamais de
+   lecture. Filtres par type et par niveau, sources de chaque côté, téléchargement de
+   `comparaison.json`.
+
+La lecture complète des DA de CLP (onze fichiers) prend plusieurs dizaines de minutes
+sur un processeur de portable ; les résultats sont ensuite repris du cache
+(`.cache/da_jobs/`), invalidé si un fichier source ou la version du parseur change.
+
+Statuts de la comparaison :
+
+| Statut | Signification |
+|---|---|
+| `same` | armatures extraites identiques |
+| `changed` | armatures différentes ou annotations supplémentaires |
+| `missing_da` | élément présent au plan seulement |
+| `missing_plan` | élément présent dans les DA seulement |
+| `review` | localisation, niveau, couche, direction ou rôle non résolu : à vérifier |
+| `out_of_scope` | type, niveau ou couche absent des résultats DA chargés |
+
+### Ligne de commande
+
+```bash
+make run PROJECT=WP2          # un projet -> out/WP2/elements_plan.json + run_manifest.json
+make run-all                  # les quatre projets
+make validate-all             # valide chaque JSON contre l'annexe A
+make summary                  # une ligne de résumé par projet
+make truth                    # clé de réponse CLP
+make clean                    # supprime out/ et les caches
+make purge                    # supprime aussi toute copie du corpus sous le dépôt
+```
+
+`make` seul liste toutes les cibles. Commandes équivalentes sans `make` :
 
 ```bash
 .venv/bin/l2c run ~/Downloads/l2c-participants/CLP --out out
 .venv/bin/l2c validate out/CLP/elements_plan.json
-.venv/bin/streamlit run app/streamlit_app.py
+.venv/bin/l2c truth ~/Downloads/l2c-participants/CLP
 ```
 
-## CLP image parsers
+Sous Windows : `.venv\Scripts\l2c.exe run %USERPROFILE%\Downloads\l2c-participants\CLP --out out`.
 
-The DA dashboard now runs the five format-specific parsers through
-`src/l2c/da/dashboard.py`. The selected CLP project folder supplies these inputs:
+### Parseurs DA en autonome
 
-| Type | File under the CLP project folder |
+Chaque parseur s'exécute seul, écrit son JSON de révision et, avec `--annotated`, un PDF
+annoté pour contrôle visuel. `--check` utilise la couche texte cachée du PDF **après**
+la lecture d'image, uniquement pour valider.
+
+```bash
+export PYTHONPATH=src
+.venv/bin/python -m l2c.da.parsers.semelle_clp --check --annotated out/semelle_clp_review.pdf
+.venv/bin/python -m l2c.da.parsers.dalle_clp   --coordinate J-15 --check --annotated out/dalle_clp_review.pdf
+.venv/bin/python -m l2c.da.parsers.poutre_clp  --check --annotated out/poutre_clp_review.pdf \
+    --compare-plan "$HOME/Downloads/l2c-participants/CLP/L2C_PLAN_STR_CLP.pdf"
+```
+
+Fichiers lus pour CLP, relativement au dossier du projet :
+
+| Type | Fichier | Pages lues |
+|---|---|---|
+| Colonnes | `DA/Colonnes/CLP_COLONNES Partie 3.pdf` + page 5 de `Partie 1` (sous-sol) | toutes |
+| Dalles | chaque PDF de `DA/Dalles/` (bas, haut, acier d'intégrité) | toutes |
+| Radiers | `DA/Fondations/CLP_RADIERS.pdf` | toutes |
+| Semelles | `DA/Fondations/CLP_SEMELLES FND.pdf` | dernière |
+| Poutres | `DA/Poutres/CLP_POUTRES.pdf` | dernière |
+
+Les fichiers produits par chaque parseur et leur format sont décrits dans
+[src/l2c/da/parsers/README.md](src/l2c/da/parsers/README.md).
+
+### Notebook
+
+`notebooks/exploration_and_colonnes_clp_demo.ipynb` explore le corpus (quels PDF ont une
+couche texte, que contiennent les autres, les trois lecteurs essayés), puis déroule le
+pipeline complet des colonnes de CLP (plan → DA → enregistrements communs →
+comparaison → JSON) en dessinant chaque étape sur le feuillet.
+
+```bash
+.venv/bin/jupyter notebook notebooks/exploration_and_colonnes_clp_demo.ipynb
+```
+
+La première fois, *Run All* prend environ 25 minutes sur un portable : l'OCR des
+colonnes du DA en prend 15 à 20. Le résultat de l'OCR est gardé dans
+`out/notebook_colonnes_clp/`, et les fois suivantes le notebook tourne en 5 minutes
+environ. Le notebook se commite **sans sorties** : ses figures sont des extraits de
+dessins confidentiels.
+
+### Sorties
+
+| Fichier | Contenu |
 |---|---|
-| Colonnes | `DA/Colonnes/CLP_COLONNES Partie 3.pdf` and the basement supplement on page 5 of `CLP_COLONNES Partie 1.pdf` |
-| Dalles | Every PDF directly inside `DA/Dalles/` (currently RDC, Tréfond and Niveaux 2, 3, 4, 5) |
-| Semelles | `DA/Fondations/CLP_SEMELLES FND.pdf` |
-| Poutres | `DA/Poutres/CLP_POUTRES.pdf` |
-| Radiers | Whole `DA/Fondations/CLP_RADIERS.pdf` |
+| `out/<projet>/elements_plan.json` | enregistrements annexe A, côté plan |
+| `out/<projet>/run_manifest.json` | version du pipeline, système d'unités détecté, état de chaque feuillet |
+| `<projet>_elements_atelier.json` | enregistrements annexe A, côté DA (téléchargement du tableau de bord) |
+| `<projet>_comparaison.json` | toutes les lignes de comparaison, avec statut, raison et sources |
 
-Columns process **all pages of Partie 3**, with every strip included, plus the
-23 basement-only columns on Partie 1's fifth page. Partie 1's repeated first four
-pages are superseded by Partie 3. Other readers
-retain their existing page scope. Results feed the tables and the **`elements_atelier.json`**
-download (download filename: `CLP_elements_atelier.json`, Appendix A). Per-parser
-review JSON files remain available through their standalone commands below.
+Les coordonnées `x`, `y` sont en points PDF, origine en haut à gauche de la page telle
+qu'affichée (rotation retirée). Les longueurs et espacements sont en millimètres.
 
-Both datasets pass through the same final formatter for columns, footings, slabs,
-beams and radiers. Roles, level aliases and primary reinforcement fields share the same
-meaning; source fabrication details remain in evidence. Existing saved results are
-upgraded without rerunning OCR. See the [shared format contract](src/l2c/da/parsers/README.md#identical-planda-record-meanings-required-for-future-parsers).
-**Radiers are connected** and process the whole file. Their primary specs use diameter/spacing,
-with rang and drawn direction kept separate. Fabrication piece counts and bar marks remain
-in source evidence. Adding the radier input reuses the existing four parsers’ file checkpoints;
-the new file and each completed radier page are saved for crash recovery.
-Other projects display an availability message instead of using CLP readers.
-
-DA generation runs in an **independent background process**. Switching sections,
-changing filters or refreshing the page reattaches to the same active job; completed
-results remain saved on disk. Progress updates automatically once per second.
-The durable registry in **`.cache/da_jobs/`** records worker identities, requests,
-progress and results. Module reloads and server restarts reconnect to existing
-workers instead of starting over. A filesystem lock prevents duplicate starts
-from multiple servers or sessions.
-
-Each completed PDF is checkpointed separately. If a worker stops, explicit retry
-resumes from those completed files; only unfinished files need parsing again.
-Checkpoints are reused only when source path, timestamp, size and parser version
-match. Every new job resumes by default. The failed-run button **Reprendre la
-génération** preserves these checkpoints and displays how many files can be
-recovered. Progress records each file immediately after its checkpoint has been
-flushed to disk, including the number reused. Invalid/truncated checkpoints are
-reparsed. Full regeneration of a completed result deliberately reparses its files.
-The current PDF restarts if it crashes before completion; previously completed
-PDFs survive page refreshes and server restarts. Older workers started before
-file checkpointing cannot recover partial results they never saved.
-The complete column schedule and radier file also checkpoint each page under
-`.cache/da_jobs/file_results/pages/`; an interruption within the PDF resumes from
-finished pages. Column page scope has its own cache signature, so changing it
-preserves all other file results. Selective column resets invalidate the aggregate
-DA result as well, including an existing server's in-memory registry, while retaining
-the other nine file checkpoints.
-
-Completed DA results depend on all selected source paths, timestamps, sizes and the
-dedicated parser version. Adding or removing a slab PDF also invalidates them. The current CLP
-folder supplies **eleven files: six slabs, the current column schedule and its basement
-supplement, semelles, poutres and radiers**.
-Its regeneration button runs these readers again after a run finishes; it is disabled
-during generation. Clearing caches preserves active jobs. Failed runs show their
-error and require explicit resume to retry. Missing files
-appear explicitly as unread; the UI never falls back to the old generic readers.
-Later PDF uploads can supply the runner's explicit `inputs` mapping.
-The older DA runner remains for historical answer-key checks (`l2c truth`);
-its results are not the DA dashboard's source.
-
-After loading both sides, open **Comparaison**. It highlights changed armatures,
-elements absent from either side and readings requiring review, with type/level
-filters and the source annotations for each side. Matching uses the element
-identifier, normalized level and slab layer; unsupported coverage is listed
-separately, including radiers. Beam matches still require spatial review. Opening
-this section never submits or reruns a DA job. Download
-**`CLP_comparaison.json`** for all rows, including identical and out-of-scope rows;
-each contains the status/reason, both reinforcement lists, unmatched bars and
-source/debug evidence. This is a parser comparison, not a certified conformity report.
-
-Both sides save **one beam record containing all its reinforcement entries**:
-CLP has 27 plan beams with 187 entries and 20 DA beams with 162 entries. Counts are
-shown separately, using the same JSON structure. Annotation roles and positions
-remain in internal comparison evidence. Existing DA caches upgrade to this
-structure without rerunning OCR; the seven beams absent from this DA stay absent.
-
-CLP beam DA elevations now have a standalone reader, tested on the last page of
-`CLP_POUTRES.pdf`. **Review `out/poutre_clp_output.json`**; the grouped original is
-`out/poutre_clp_plan_output.json` and the comparison is `out/poutre_clp_comparison.json`.
-Circle axes appear as positions (`17 → 16 → 15`, `L → K`); small squares are stirrup
-zones, not additional beams. Original S-300 has **27 beams / 187 reinforcement
-callouts** after restoring the right-edge annotations. This DA contains 20 beams.
-
-```bash
-PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.poutre_clp \
-  --check --annotated out/poutre_clp_review.pdf \
-  --compare-plan "$HOME/Downloads/l2c-participants/CLP/L2C_PLAN_STR_CLP.pdf"
-```
-
-Shared stirrup totals are resolved through local zone quantities; unread zones,
-missing beams and reinforcement/dimension differences remain review findings.
-See [the parser architecture](src/l2c/da/parsers/README.md) for the JSON contract.
-Fresh single-file verification: **162/162 source checks**, **150/152 original
-specifications located**, 46 focused tests passing. P112/P116, nine unmatched DA
-annotations and seven missing beams remain review findings. The readable report
-is `out/poutre_clp_comparison.md`; source checks do not certify complete conformity.
-
-The original-plan slab reader also resolves circled integrity types from the plan's
-own detail table: CLP detail #101 on S-003 defines A as `2-15M` and B as `3-15M` in
-each direction. Integrity records retain NUM/ALP roles and their detail source,
-separately from ordinary numeric slab annotations.
-
-Both dashboard sections have **Vider le cache et régénérer** buttons. Each clears
-the selected project's cached result for that section and reruns its parser; the
-other section's cached result remains available.
-
-The standalone CLP slab parser reads **only the last page of each PDF**. It locates
-grey support rectangles using separate grids for the main view and inset details,
-then OCRs and associates nearby reinforcement callouts. It does not read the plan.
-
-```bash
-.venv/bin/pip install -e '.[da]'  # local OCR dependencies
-PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.dalle_clp \
-  --coordinate J-15 --check --annotated out/dalle_clp_review.pdf
-PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.dalle_clp \
-  ~/Downloads/l2c-participants/CLP/DA/Dalles \
-  --annotated out/dalle_reviews
-```
-
-**Final file to review: `out/dalle_clp_output.json`**, sanitized to include only
-populated grid locations, with directional reinforcement such as `22-15M`, lengths,
-raw OCR and read status. Unread intersections remain in the diagnostics file. The exact format and
-parser architecture are documented in [the parsers README](src/l2c/da/parsers/README.md).
-
-Other defaults: `CLP_DALLE NIV 3.pdf`, `out/dalle_clp.json` (Appendix A records) and
-`out/dalle_clp_diagnostics.json` (all detected supports, raw OCR, layer, direction,
-confidence and unread reasons). `out/dalle_clp_summaries.json` provides count–diameter
-strings such as `22-15M`; direction labels remain separate (`NUM: 3-15M · ALP: 3-15M`).
-Niveau 5's dashed column outlines in grey backgrounds are also detected.
-`--check` uses the hidden PDF text **only after**
-the image read, for validation. `--max-supports N` limits an exploratory run.
-Partial reads retain known values and flag unread lengths or marks. Dense callouts
-still need review; the dashboard uses this same parser for the configured Niveau 3 file.
-
-The CLP isolated-footing parser reads **one PDF, its last page only**. It links the
-small hexagonal type labels inside footing squares to the drawing's type schedule,
-then keeps longitudinal and transverse reinforcement separately.
-
-```bash
-PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.semelle_clp \
-  --check --annotated out/semelle_clp_review.pdf
-```
-
-**Final semelle file to review: `out/semelle_clp_output.json`**, with coordinates,
-type letters and summaries such as `7-25M · 7-25M`. Empty/unlocated rows stay in
-`out/semelle_clp_diagnostics.json`; `out/semelle_clp.json` is the Appendix-A export.
-The [parsers README](src/l2c/da/parsers/README.md) documents the strategy, JSON format
-and other output files. The dashboard uses this same reader for its configured semelle file.
-
-## Results on the four development projects (plan side)
+## Résultats côté plan
 
 ```
-PROJECT  SHEETS  RECORDS  radier semelle poutre mur_refend colonne dalle  UNITS
-CLP          18     2468      77      75    187        119     395  1615  imperial
-WP2          33     4681      35     124    283        212     912  3115  metric
-LIGREP       26     3562      30     112    240        174     677  2329  metric
-EspCa3B      45     2806      54      20    212        369     644  1507  metric
-                   13517
+PROJET   FEUILLETS  ENREG.  radier semelle poutre mur_refend colonne dalle  UNITÉS
+CLP          18      2468      77      75    187        119     395  1615  impérial
+WP2          33      4681      35     124    283        212     912  3115  métrique
+LIGREP       26      3562      30     112    240        174     677  2329  métrique
+EspCa3B      45      2806      54      20    212        369     644  1507  métrique
 ```
 
-`SHEETS` = sheets with element reinforcement; the rest (typical details, general
-arrangement plans) are listed as skipped with the reason. Every record gets a locator,
-but a locator is not proof of correctness. The checks that are:
+`FEUILLETS` compte les feuillets portant de l'armature d'élément ; `make summary`
+régénère ces chiffres. Un enregistrement localisé n'est pas pour autant prouvé exact.
+Les contrôles qui le sont :
 
-- **Answer key** — `make truth` derives all 6 rows of `CLP_dismatch.xlsx` from the
-  drawings (radier `J-10.8`, footing `L-13`, wall `élévation B - RDC @ 2`, columns
-  `K-6` and `I-13`, slab `J-15`). The key is read at run time, never copied into code.
-- **Grid geometry** — where the line grid and the old label-only grid disagreed on
-  columns, the line grid puts the symbol 0.0–0.6 pt from its grid lines, the old one
-  20–326 pt (fractional `B.2`, primed `F'`, doubled `CC` labels).
+- **Clé de réponse** — les 6 lignes de `CLP_dismatch.xlsx` sont retrouvées à partir des
+  dessins (radier `J-10.8`, semelle `L-13`, mur `élévation B - RDC @ 2`, colonnes `K-6`
+  et `I-13`, dalle `J-15`).
+- **Géométrie de grille** — là où la grille par lignes et l'ancienne grille par
+  étiquettes divergeaient, la première place le symbole à 0,0–0,6 pt de ses axes, la
+  seconde à 20–326 pt.
 
-Only CLP has an answer key; the rules were each checked on all four projects.
+Côté DA et comparaison (CLP) : les poutres donnent 27 poutres / 187 armatures au plan
+contre 20 poutres / 162 armatures dans le DA lu ; pour les semelles, la différence
+connue en `L-13` ressort comme `changed`.
 
 ## Tests
 
 ```bash
-make test            # 74 tests, ~90 s, against the real corpus
-make test-coords     # just the coordinate-trap guards
-make test-e2e        # just the end-to-end corpus runs
-make test-ui         # just the headless dashboard tests
+make test-coords     # pièges de coordonnées
+make test-e2e        # exécutions complètes sur le corpus
+make test-ui         # tableau de bord, sans navigateur
+.venv/bin/python -m pytest tests/test_semelle_clp.py -q     # un fichier à la fois
 ```
 
-What they guard:
+Les tests lisent le corpus réel (`L2C_CORPUS`) et sont sautés proprement s'il est
+absent. **`make test` lance toute la suite, y compris `tests/test_app.py`, qui démarre
+une vraie lecture OCR des DA de CLP** (très long) : préférer les fichiers ciblés.
 
-- **`test_coords.py`** — the two coordinate traps: non-zero MediaBox origin (19% of
-  pages) and `/Rotate 90` (65%). Includes a test showing pdfplumber would be off by
-  `dx=-1727.7`.
-- **`test_end_to_end.py`** — per-project and per-type volume, unique ids, locator
-  coverage, unit auto-detection, schema validity, byte-level determinism, all 6
-  answer-key rows, scale calibration.
-- **`test_sheets.py`** — every page has a unique sheet number (incl. `S-600A`,
-  `S-103.a`); sheet type agrees with the numbering series; multi-view grid (`J-10.8`).
-- **`test_app.py`** — the dashboard driven headlessly by `streamlit.testing`.
-- **`test_model.py`** — an `M`→`H` glyph misread is unrepresentable (`Armature(diametre="25H")`
-  raises); see PLAN §5.14 for the measured 83% raw error rate.
+| Fichier | Ce qu'il garde |
+|---|---|
+| `test_coords.py` | origine de MediaBox non nulle (19 % des pages) et `/Rotate 90` (65 %) |
+| `test_end_to_end.py` | volumes par projet et par type, identifiants uniques, unités, schéma, déterminisme, clé de réponse |
+| `test_sheets.py` | numéro de feuillet unique par page, type cohérent avec la série |
+| `test_model.py`, `test_units.py` | vocabulaire fermé des barres, conversions |
+| `test_*_clp.py`, `test_da*.py` | parseurs DA, tâches d'arrière-plan et points de reprise |
+| `test_comparison*.py`, `test_*_records.py`, `test_record_formats.py` | format commun et comparaison |
+| `test_app*.py` | tableau de bord piloté par `streamlit.testing` |
 
-Set `L2C_CORPUS` to point at the corpus; tests skip cleanly if it is absent.
+## Hypothèses
 
-## Confidentiality
+**Sur les documents**
 
-The corpus is confidential (consignes §4). `.gitignore` excludes all drawing data,
-`out/` and the cache; the corpus path is always a CLI argument, never baked in. The
-pipeline is fully local — no cloud services and no external AI APIs at runtime.
-`PLAN.md §13` has the full compliance checklist, including the PyMuPDF AGPL note.
+- Un projet est un dossier contenant un plan nommé `L2C_PLAN_STR_*.pdf` et un
+  sous-dossier `DA/`.
+- Les plans L2C sont des PDF **vectoriels avec couche texte**. Un plan numérisé n'est
+  pas lu.
+- Le type d'un feuillet se déduit de son titre et de sa série (S-050/060 radier, S-100
+  semelles, S-300 poutres, S-400 murs de refend, S-500 colonnes, S-600 dalles).
+- Les axes sont dessinés comme des lignes longues (≥ 150 pt) terminées par une bulle
+  étiquetée. La convention lettres/chiffres est détectée par projet, mais le
+  localisateur émis est toujours `<lettre>-<chiffre>`.
+- Les barres suivent la désignation canadienne (`10M` à `55M`).
+- Le système d'unités (impérial ou métrique) est détecté par projet, jamais supposé ;
+  la sortie est toujours en millimètres.
 
-## Known issues
+**Sur la lecture des dessins d'atelier**
 
-- Only CLP has an answer key: on WP2, LIGREP and EspCa3B correctness is backed by
-  geometry checks, not by labelled truth.
-- Slab (`dalle`) callouts are located at their own position; a callout placed between
-  two columns resolves to the nearer one (confidence reflects the distance).
-- Walls: LIGREP S-400 and S-401 both title their views A, B, C, so a wall element
-  (`élévation A - RDC @ 2`) is unique only together with its sheet.
-- Legend and detail tables (épingle spacing tables, `ARM. ADD.` shear-reinforcement
-  details, the pilaster detail beside the foundations plan) are not attached to a grid
-  location and are not extracted.
-- Radier layer in WP2/EspCa3B is inferred from each view's direction legend
-  (`RANG 1 & 4` / `RANG 2 & 3`), at reduced confidence.
-- Column callouts with no dimension-matching symbol within 100 pt (CLP 3, WP2 11 — the
-  WP2 ones are columns drawn inside a wall) are placed from the callout position, using
-  the sheet's usual callout-to-column offset when it is consistent, at reduced confidence.
-- A few columns share a locator: no labelled grid line passes through the second one
-  (WP2 S-512 `T.1-34..37`), or two columns stand at one intersection (EspCa3B `B-2`).
+- Les DA sont lus comme des **images**, indépendamment de la façon dont le logiciel du
+  fabricant encode le texte (couche texte, glyphes vectorisés ou numérisation).
+- Chaque parseur DA suppose la **mise en page d'un fabricant** : emplacement des
+  tableaux, étiquettes de rôle (`VERT:`, `ÉTRI:`, `LONG:`, `TRAN:`), symboles. Ceux
+  livrés sont calés sur CLP.
+- Pour les colonnes de CLP, `Partie 3` remplace les quatre premières pages de
+  `Partie 1` ; aucune résolution générale des révisions n'est faite.
+
+**Sur la comparaison**
+
+- Deux enregistrements sont appariés par type, niveau normalisé, couche de dalle et
+  identifiant (coordonnée de grille ou repère).
+- On compare la spécification principale (quantité, diamètre, espacement). Les repères
+  de façonnage, longueurs de coupe et nombres de pièces du fabricant restent dans les
+  éléments de preuve et ne déclenchent pas d'écart.
+
+## Limites connues
+
+**Portée**
+
+- **Seuls les DA de CLP sont lus.** Pour WP2, LIGREP et EspCa3B, le tableau de bord
+  affiche un message d'indisponibilité. Un projet inconnu sera donc extrait côté plan,
+  mais pas comparé. Un lecteur de semelles pour EspCa3B existe à l'état expérimental
+  (`src/l2c/da/parsers/semelle_espca3b.py`), non branché.
+- **Aucun lecteur DA pour les murs de refend.**
+- **Pas de rapport PDF**, ni de classement final `conforme` / `non conforme` /
+  `manquant` / `ajouté` : la section Comparaison montre des écarts de lecture à faire
+  valider par une personne.
+- Semelles et poutres : seule la dernière page du PDF est lue. Sept élévations de
+  poutres du plan n'ont pas de vis-à-vis dans le DA lu.
+- Les chemins des fichiers DA de CLP sont fixés dans `l2c.da.dashboard` ; le
+  téléversement direct de PDF de DA n'est pas offert dans l'interface.
+
+**Exactitude**
+
+- Seul CLP a une clé de réponse. Sur les trois autres projets, l'exactitude repose sur
+  des contrôles géométriques, pas sur une vérité étiquetée.
+- Dalles : un appel placé entre deux colonnes est rattaché à la plus proche (la
+  confiance reflète la distance). Les appels denses restent à réviser.
+- Poutres : l'accord de deux armatures exige encore une vérification de leur position
+  le long de la poutre (P112 et P116 notamment).
+- Murs : dans LIGREP, S-400 et S-401 nomment tous deux leurs vues A, B, C ; un mur n'est
+  unique qu'avec son feuillet.
+- Radiers de WP2 et d'EspCa3B : le rang est déduit de la légende de direction de la vue
+  (`RANG 1 & 4` / `RANG 2 & 3`), à confiance réduite.
+- Colonnes sans symbole correspondant dans un rayon de 100 pt (CLP 3, WP2 11) : placées
+  d'après la position de l'appel, à confiance réduite.
+- Quelques colonnes partagent un localisateur (WP2 S-512 `T.1-34..37`, EspCa3B `B-2`).
+- Les tableaux de légende et de détails (espacement des épingles, `ARM. ADD.`, détail
+  de pilastre) ne sont pas rattachés à la grille et ne sont pas extraits.
+- Les erreurs d'OCR résiduelles sont signalées par le score de confiance et le statut
+  `review`, pas corrigées.
+
+**Technique**
+
+- **Tableau de bord sous Windows.** `src/l2c/da/jobs.py` importe `fcntl`, absent de
+  Python pour Windows ; `ui.cmd` échoue donc au démarrage sur un Windows natif. La
+  ligne de commande, les parseurs DA autonomes et le notebook y fonctionnent. Utiliser
+  Linux, macOS ou WSL pour le tableau de bord.
+- La lecture OCR est lente sur processeur seul (plusieurs dizaines de minutes pour
+  CLP) ; il n'y a pas d'accélération GPU.
+- Le cache des tâches DA (`.cache/da_jobs/`) contient des fichiers `pickle` : ne charger
+  que ceux produits localement.
+- `make` suppose un environnement POSIX ; sous Windows, utiliser `install.cmd` et les
+  commandes directes.
+
+## Confidentialité et licences
+
+- Le corpus est confidentiel (consignes §4). `.gitignore` exclut les plans, les
+  dossiers `DA/`, la clé de réponse, `out/`, les caches et les images. Le chemin du
+  corpus est toujours un argument, jamais inscrit dans le code. `make purge` supprime
+  les sorties et toute copie du corpus sous le dépôt ; le corpus lui-même doit être
+  supprimé du poste après l'événement.
+- Aucune donnée ne quitte le poste. Les modèles OCR (poids ONNX de RapidOCR) sont des
+  fichiers locaux ; s'ils sont absents, RapidOCR les télécharge une fois, à la première
+  utilisation — prévoir cette étape avant de travailler hors ligne.
+- Toutes les dépendances sont à code source ouvert. **PyMuPDF est sous AGPL-3.0** : sans
+  conséquence pour un usage local, mais à considérer si l'outil devait être offert
+  comme service réseau (voir PLAN.md §13).

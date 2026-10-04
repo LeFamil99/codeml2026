@@ -1,7 +1,7 @@
 @echo off
 rem L2C Review - Windows equivalent of `make install`.
 rem Creates .venv (Python 3.13 via uv) and installs the project editable with the
-rem dashboard, OCR and test extras.
+rem dashboard, OCR, test and notebook extras.
 setlocal
 cd /d "%~dp0"
 
@@ -16,7 +16,7 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 exit /b 1
 )
 
-uv pip install --python ".venv\Scripts\python.exe" -e ".[app,da,dev]"
+uv pip install --python ".venv\Scripts\python.exe" -e ".[app,da,dev,notebook]"
 if errorlevel 1 exit /b 1
 
 echo.
