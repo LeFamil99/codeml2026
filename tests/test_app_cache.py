@@ -54,7 +54,7 @@ def test_section_buttons_rerun_only_the_selected_parser(tmp_path, monkeypatch, b
         at.segmented_control[0].set_value("Dessins d'atelier").run()
         wait_for_da(at)
         assert not at.exception and calls["atelier"] == 1
-        assert any("Radiers" in info.value and "à venir" in info.value for info in at.info)
+        assert any("CLP_RADIERS.pdf" in text.value for text in at.markdown)
         assert any("CLP_POUTRES.pdf" in text.value for text in at.markdown)
         at.run()
         assert not at.exception and calls["atelier"] == 1

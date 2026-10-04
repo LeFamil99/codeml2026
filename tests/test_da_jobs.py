@@ -29,12 +29,12 @@ def test_worker_retry_after_crash_reuses_committed_file_and_saves_progress(
     retry = restored.ensure(str(project), (), dashboard.PARSER_VERSION, inputs, force=True)
     retry.process.future.result(timeout=5)
     assert retry.result().meta["checkpoint_hits"] == 1
-    assert len(retry.snapshot()["saved_files"]) == 4
+    assert len(retry.snapshot()["saved_files"]) == 5
     assert retry.snapshot()["checkpoint_hits"] == 1
     assert sum(call[0] == "colonne" for call in connected_parsers) == 2
     again = restored.ensure(str(project), (), dashboard.PARSER_VERSION, inputs, force=True)
     again.process.future.result(timeout=5)
-    assert again.result().meta["checkpoint_hits"] == 4 and len(connected_parsers) == 5
+    assert again.result().meta["checkpoint_hits"] == 5 and len(connected_parsers) == 6
     assert json.loads((again.directory / "request.json").read_text())["reuse_checkpoints"] is True
 
 
@@ -58,9 +58,9 @@ def test_external_column_cache_reset_reparses_only_columns_in_same_server(
     fresh = background_jobs.ensure(str(project), (), dashboard.PARSER_VERSION, inputs)
     fresh.process.future.result(timeout=5)
     assert fresh.directory != first.directory
-    assert fresh.result().meta['checkpoint_hits'] == 3
-    assert len(connected_parsers) == 7
-    assert sum(call[0] != 'colonne' for call in connected_parsers) == 3
+    assert fresh.result().meta['checkpoint_hits'] == 4
+    assert len(connected_parsers) == 8
+    assert sum(call[0] != 'colonne' for call in connected_parsers) == 4
 
 
 @pytest.mark.parametrize('interrupt', ['between_files', 'within_column'])
@@ -131,12 +131,12 @@ def test_failed_run_ui_resumes_without_clearing_completed_files(
         first.process.future.result(timeout=5)
         at.run()
         assert not at.exception and "Reprendre" in at.button(key='regenerate_atelier').label
-        assert any('1/4 fichiers récupérables' in item.value for item in at.info)
+        assert any('1/5 fichiers récupérables' in item.value for item in at.info)
         monkeypatch.setitem(dashboard.PARSERS, 'dalle', original)
         at.button(key='regenerate_atelier').click().run()
         wait_for_da(at)
         assert not at.exception and not at.error
-        assert len(connected_parsers) == 5
+        assert len(connected_parsers) == 6
         assert any('1 fichiers réutilisés' in item.value for item in at.caption)
     finally:
         st.cache_data.clear()
@@ -196,7 +196,7 @@ def test_real_worker_process_preserves_result_metadata(tmp_path):
         assert job.snapshot()["status"] == "completed"
         result = job.result()
         assert len(result.sheets) == 1 and result.sheets[0].status == "unread"
-        assert result.meta["last_page_only"] and result.meta["pending_types"] == ["radier"]
+        assert result.meta["last_page_only"] and result.meta["pending_types"] == []
         assert manager.ensure(project, (), "test", {"semelle": "unused.pdf"}) is job
     finally:
         if job.process.poll() is None:

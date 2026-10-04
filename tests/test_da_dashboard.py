@@ -7,7 +7,7 @@ import pytest
 from l2c import io_json
 from l2c.da import dashboard
 from l2c.da.imageread import TextLine
-from l2c.da.parsers import colonne_clp, dalle_clp, poutre_clp, semelle_clp
+from l2c.da.parsers import colonne_clp, dalle_clp, poutre_clp, radier_clp, semelle_clp
 from conftest import wait_for_da
 
 
@@ -47,9 +47,9 @@ def test_old_column_page_cells_upgrade_without_reparsing_other_types(
     result = dashboard.run_da(str(project), checkpoint_dir=directory)
     assert repaired == [1, 2]
     assert len(connected_parsers) == initial_calls
-    assert result.meta["checkpoint_hits"] == 3
+    assert result.meta["checkpoint_hits"] == 4
     assert result.meta["page_checkpoint_hits"] == 2
-    assert dashboard.run_da(str(project), checkpoint_dir=directory).meta["checkpoint_hits"] == 4
+    assert dashboard.run_da(str(project), checkpoint_dir=directory).meta["checkpoint_hits"] == 5
 
 
 def sources(tmp_path, all_slabs=False):
@@ -64,6 +64,9 @@ def sources(tmp_path, all_slabs=False):
         path.parent.mkdir(parents=True, exist_ok=True)
         with pymupdf.open() as doc:
             doc.new_page()
+            if relative == dashboard.CLP_FILES["radier"]:
+                doc.save(path)
+                continue
             last = doc.new_page(width=500, height=400)
             last.set_rotation(90)
             doc.save(path)
@@ -115,8 +118,15 @@ def connected_parsers(monkeypatch):
         bubbles = [dalle_clp.Bubble(x, 90, 20, label, .99)
                    for x, label in [(50, "17"), (130, "16"), (210, "15")]]
         return poutre_clp.assemble(lines, bubbles, filename, page.number + 1, 500, 400)
+    def radiers(page, filename, *, check):
+        note("radier", page, filename)
+        assert check is False
+        spec = radier_clp.Spec(page.number + 1, "view-1", "RADIER #1", "J-13", "vertical",
+            'TRAN: 24 30M @11"BAS', (100, 100, 110, 150), rang=2, face="BAS",
+            quantite=24, diametre="30M", espacement_mm=279.4, status="read", confidence=.97)
+        return radier_clp.PageResult(filename, page.number + 1, [], [spec], [], [], 0.)
     for module, reader in [(colonne_clp, columns), (dalle_clp, slabs),
-                           (semelle_clp, footings), (poutre_clp, beams)]:
+                           (semelle_clp, footings), (poutre_clp, beams), (radier_clp, radiers)]:
         monkeypatch.setattr(module, "parse_page", reader)
     return called
 
@@ -133,10 +143,10 @@ def test_adapters_read_all_column_pages_and_other_last_pages(
     monkeypatch.setattr(l2c.da.pipeline, "run_da", forbidden)
     progress = []
     result = dashboard.run_da(str(project), progress=lambda *args: progress.append(args))
-    assert len(connected_parsers) == 5 and [call[1] for call in connected_parsers if call[0] == 'colonne'] == [1, 2]
-    assert len(result.sheets) == 5 and all(s.page == 2 for s in result.sheets if s.type_element != 'colonne')
+    assert len(connected_parsers) == 6 and [call[1] for call in connected_parsers if call[0] == 'colonne'] == [1, 2]
+    assert len(result.sheets) == 6 and all(s.page == 2 for s in result.sheets if s.type_element not in {'colonne', 'radier'})
     assert all(s.status == "extracted" and s.tier == 3 for s in result.sheets)
-    assert len(result.records) == 4
+    assert len(result.records) == 5
     assert {r.type_element for r in result.records} == set(dashboard.CLP_FILES)
     assert all(r.element != "UNKNOWN" and r.armature and r.debug.decode_path == "ocr"
                for r in result.records)
@@ -149,21 +159,21 @@ def test_adapters_read_all_column_pages_and_other_last_pages(
     assert column.debug.niveau == "NIVEAU 2" and column.armature[1].espacement_mm == 152.4
     assert result.sheets[0].diagnostics["deduplication"]["removed_rows"] == 1
     assert len(result.sheets[0].diagnostics["cells"]) == 4
-    assert result.meta["pending_types"] == ["radier"]
-    assert progress[-1][0:2] == (4, 4)
+    assert result.meta["pending_types"] == []
+    assert progress[-1][0:2] == (5, 5)
     output = tmp_path / "elements_atelier.json"
     io_json.write_records(str(output), result.records)
-    assert io_json.validate_file(str(output)) == (4, [])
+    assert io_json.validate_file(str(output)) == (5, [])
 
 
 def test_missing_sources_are_reported_and_other_projects_do_not_use_clp_files(tmp_path):
     result = dashboard.run_da(str(tmp_path / "CLP"))
-    assert not result.records and len(result.sheets) == 4
+    assert not result.records and len(result.sheets) == 5
     assert all(s.status == "unread" and "introuvable" in s.reason for s in result.sheets)
     with pytest.raises(ValueError, match="CLP uniquement"):
         dashboard.run_da(str(tmp_path / "WP2"))
-    with pytest.raises(ValueError, match="radier"):
-        dashboard.run_da(str(tmp_path / "CLP"), inputs={"radier": "unused.pdf"})
+    with pytest.raises(ValueError, match="mur_refend"):
+        dashboard.run_da(str(tmp_path / "CLP"), inputs={"mur_refend": "unused.pdf"})
 
 
 def test_input_stamp_tracks_selected_files_including_removal(tmp_path):
@@ -197,8 +207,8 @@ def test_all_slab_pdfs_use_last_pages_and_keep_each_file_in_the_output(
     expected = {"CLP_DALLE NIV 3.pdf": 2,
                 **{filename: index for index, filename in enumerate(extra, 3)}}
     assert {r.fichier: r.page for r in slabs} == expected
-    assert len(result.records) == 9 and result.meta["files"] == 9
-    assert len({r.id for r in result.records}) == 9
+    assert len(result.records) == 10 and result.meta["files"] == 10
+    assert len({r.id for r in result.records}) == 10
     assert len([call for call in connected_parsers if call[0] == "dalle"]) == 6
     assert {s.fichier: s.page for s in result.sheets if s.type_element == "dalle"} == expected
     # Future uploads can provide a list; one path repeated must run only once.
@@ -233,19 +243,19 @@ def test_interrupted_run_resumes_completed_files_and_invalidates_changed_inputs(
     assert len(list(checkpoints.glob("*.pkl"))) == 1
     monkeypatch.setitem(dashboard.PARSERS, "dalle", original)
     resumed = dashboard.run_da(str(project), checkpoint_dir=checkpoints)
-    assert len(resumed.records) == 4 and resumed.meta["checkpoint_hits"] == 1
+    assert len(resumed.records) == 5 and resumed.meta["checkpoint_hits"] == 1
     assert sum(call[0] == "colonne" for call in connected_parsers) == 2
     saved = [r.to_schema() for r in resumed.records]
     cached = dashboard.run_da(str(project), checkpoint_dir=checkpoints)
-    assert cached.meta["checkpoint_hits"] == 4
+    assert cached.meta["checkpoint_hits"] == 5
     assert [r.to_schema() for r in cached.records] == saved
-    assert len(connected_parsers) == 5
+    assert len(connected_parsers) == 6
     slab = dashboard.configured_inputs(str(project))["dalle"][0]
     slab.write_bytes(slab.read_bytes() + b"\n")
     changed = dashboard.run_da(str(project), checkpoint_dir=checkpoints)
-    assert changed.meta["checkpoint_hits"] == 3 and len(connected_parsers) == 6
+    assert changed.meta["checkpoint_hits"] == 4 and len(connected_parsers) == 7
     fresh = dashboard.run_da(str(project), checkpoint_dir=checkpoints, reuse_checkpoints=False)
-    assert fresh.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 11
+    assert fresh.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 13
 
 
 def test_column_adapter_keeps_levels_conflicts_and_zero_confidence():
@@ -273,10 +283,10 @@ def test_column_scope_only_invalidates_columns_and_keeps_other_file_caches(
     for kind, fingerprint in other_keys.items():
         assert dashboard.file_checkpoint(kind, inputs[kind][0], cache)[0] == fingerprint
     second = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert second.meta['checkpoint_hits'] == 3
-    assert len(connected_parsers) == 7  # Only the two column pages reread.
+    assert second.meta['checkpoint_hits'] == 4
+    assert len(connected_parsers) == 8  # Only the two column pages reread.
     assert first.meta['page_policy']['colonne'] == 'all'
-    assert len(second.sheets) == 5 and not second.meta['last_page_only']
+    assert len(second.sheets) == 6 and not second.meta['last_page_only']
 
 
 def test_interrupted_column_pdf_resumes_saved_page_and_deduplicates_across_pages(
@@ -299,7 +309,7 @@ def test_interrupted_column_pdf_resumes_saved_page_and_deduplicates_across_pages
     monkeypatch.setattr(colonne_clp, 'parse_page', original)
     resumed = dashboard.run_da(str(project), checkpoint_dir=cache)
     assert resumed.meta['page_checkpoint_hits'] == 1
-    assert len(connected_parsers) == 5
+    assert len(connected_parsers) == 6
     columns = [r for r in resumed.records if r.type_element == 'colonne']
     assert len(columns) == 1  # Same coordinate/storey/spec on both synthetic pages.
     reports = [s for s in resumed.sheets if s.type_element == 'colonne']
@@ -315,16 +325,16 @@ def test_corrupt_checkpoint_is_reparsed_and_version_change_invalidates_cache(
     cache = tmp_path / "cache"
     dashboard.run_da(str(project), checkpoint_dir=cache)
     inputs = dashboard.configured_inputs(str(project))
-    assert len(dashboard.checkpoint_inventory(inputs, cache)) == 4
+    assert len(dashboard.checkpoint_inventory(inputs, cache)) == 5
     fingerprint, checkpoint = dashboard.file_checkpoint("dalle", inputs["dalle"][0], cache)
     checkpoint.write_bytes(b"incomplete write")
-    assert len(dashboard.checkpoint_inventory(inputs, cache)) == 3
+    assert len(dashboard.checkpoint_inventory(inputs, cache)) == 4
     repaired = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert repaired.meta["checkpoint_hits"] == 3 and len(connected_parsers) == 6
+    assert repaired.meta["checkpoint_hits"] == 4 and len(connected_parsers) == 7
     monkeypatch.setattr(dashboard, "PARSER_VERSION", "next-version")
     assert dashboard.checkpoint_inventory(inputs, cache) == []
     changed = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 11
+    assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 13
 
 
 def test_da_ui_uses_the_connected_parsers_and_downloads_their_records(
@@ -354,26 +364,73 @@ def test_da_ui_uses_the_connected_parsers_and_downloads_their_records(
         at.segmented_control[0].set_value("Dessins d'atelier").run()
         wait_for_da(at)
         assert not at.exception
-        assert len(connected_parsers) == 10
+        assert len(connected_parsers) == 11
         metrics = {m.label: m.value for m in at.metric}
-        assert metrics["Radiers"] == "À venir" and metrics["Pages traitées"] == "10"
-        assert metrics["Pages lues par OCR"] == "10"
+        assert metrics["Radiers"] == "1" and metrics["Pages traitées"] == "11"
+        assert metrics["Pages lues par OCR"] == "11"
         for filename in (p.name for p in dashboard.configured_inputs(str(project))["dalle"]):
             assert any(filename in text.value for text in at.markdown)
         tables = [df.value for df in at.dataframe if "armature" in df.value]
         assert any("LONG: 11-25M · TRAN: 11-25M" in value
                    for table in tables for value in table.armature)
         at.run()
-        assert not at.exception and len(connected_parsers) == 10
+        assert not at.exception and len(connected_parsers) == 11
         at.segmented_control[0].set_value("Plan L2C").run()
         assert not at.exception
         at.segmented_control[0].set_value("Dessins d'atelier").run()
-        assert not at.exception and len(connected_parsers) == 10
+        assert not at.exception and len(connected_parsers) == 11
         at.button(key="regenerate_atelier").click().run()
         wait_for_da(at)
-        assert not at.exception and len(connected_parsers) == 20
+        assert not at.exception and len(connected_parsers) == 22
         # Capture the serialization actually invoked by the UI download view.
-        assert len(downloaded[-1]) == 9
+        assert len(downloaded[-1]) == 10
         assert {r["type_element"] for r in downloaded[-1]} == set(dashboard.CLP_FILES)
     finally:
         st.cache_data.clear()
+
+
+def test_adding_radiers_reuses_all_existing_parser_checkpoints(tmp_path, connected_parsers):
+    project = sources(tmp_path)
+    inputs = dashboard.configured_inputs(str(project))
+    cache = tmp_path / "cache"
+    old_inputs = {kind: paths for kind, paths in inputs.items() if kind != "radier"}
+    dashboard.run_da(str(project), inputs=old_inputs, checkpoint_dir=cache)
+    fingerprints = {kind: dashboard.file_checkpoint(kind, paths[0], cache)[0]
+                    for kind, paths in old_inputs.items()}
+    connected_parsers.clear()
+    result = dashboard.run_da(str(project), checkpoint_dir=cache)
+    assert [call[0] for call in connected_parsers] == ["radier"]
+    assert result.meta["checkpoint_hits"] == 4
+    assert result.meta["pending_types"] == []
+    for kind, fingerprint in fingerprints.items():
+        assert dashboard.file_checkpoint(kind, inputs[kind][0], cache)[0] == fingerprint
+
+
+def test_radier_crash_resumes_saved_pages_without_repeating_ocr(
+        tmp_path, monkeypatch, connected_parsers):
+    project = sources(tmp_path)
+    path = dashboard.configured_inputs(str(project))["radier"][0]
+    with pymupdf.open() as doc:
+        doc.new_page()
+        doc.new_page()
+        doc.save(path)
+    reader = radier_clp.parse_page
+    def interrupted(page, filename, **kwargs):
+        if page.number == 1:
+            raise RuntimeError("radier page two interrupted")
+        return reader(page, filename, **kwargs)
+    monkeypatch.setattr(radier_clp, "parse_page", interrupted)
+    cache = tmp_path / "cache"
+    inputs = {"radier": path}
+    with pytest.raises(RuntimeError, match="page two interrupted"):
+        dashboard.run_da(str(project), inputs=inputs, checkpoint_dir=cache)
+    monkeypatch.setattr(radier_clp, "parse_page", reader)
+    events = []
+    result = dashboard.run_da(str(project), inputs=inputs, checkpoint_dir=cache,
+                              page_progress=lambda *args: events.append(args))
+    assert [call[1] for call in connected_parsers] == [1, 2]
+    assert [sheet.page for sheet in result.sheets] == [1, 2]
+    assert result.meta["page_checkpoint_hits"] == 1
+    assert result.meta["page_policy"]["radier"] == "all"
+    assert any(event[1] == 1 and event[3:] == (True, True) for event in events)
+    assert dashboard.run_da(str(project), inputs=inputs, checkpoint_dir=cache).meta["checkpoint_hits"] == 1

@@ -105,3 +105,35 @@ def test_completed_job_refreshes_an_atomic_saved_format_upgrade(tmp_path):
     second=job.result()
     assert second is not first and second.records[0].armature[0].quantite==11
     assert job.result() is second
+
+
+def test_radier_primary_specs_match_plan_spacing_and_keep_fabrication_evidence():
+    plan = record("radier", bars=[Armature(diametre="30M", espacement_mm=279.4)],
+                  direction="vertical", layer="2")
+    da = record("radier", "atelier", direction="VERTICALE", layer="RANG 2",
+                bars=[Armature(diametre="30M", espacement_mm=279.4, quantite=24,
+                               repere="30RU19-09")])
+    a, b = align_records([plan, da])
+    assert a.armature == b.armature
+    assert a.debug.roles == b.debug.roles == ["vertical"]
+    assert a.debug.niveau == b.debug.niveau == "FONDATION"
+    assert a.debug.layer == b.debug.layer == "2"
+    assert b.debug.reinforcement_details[0]["quantite"] == 24
+    assert compare(dataset([plan]), dataset([da]))[0]["status"] == "same"
+    assert not align_result(dataset([a, b]))
+
+
+def test_radier_direction_layer_and_actual_spacing_differences_remain_visible():
+    plan = record("radier", direction="horizontal", layer="2",
+                  bars=[Armature(diametre="30M", espacement_mm=279.4)])
+    da = record("radier", "atelier", direction="horizontal", layer="2",
+                bars=[Armature(diametre="30M", espacement_mm=203.2)])
+    assert compare(dataset([plan]), dataset([da]))[0]["status"] == "changed"
+    da.debug.direction = "vertical"
+    rows = compare(dataset([plan]), dataset([da]))
+    assert len(rows) == 2 and all(row["status"] != "same" for row in rows)
+    unknown = record("radier", "atelier", direction="horizontal", layer=None)
+    assert any(row["status"] == "review" for row in compare(dataset([plan]), dataset([unknown])))
+    counted = align_records([record("radier", bars=[Armature(quantite=22, diametre="35M")],
+                                    direction="horizontal", layer="1")])[0]
+    assert counted.armature[0].quantite == 22

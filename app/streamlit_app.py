@@ -187,13 +187,12 @@ elif section == "Comparaison":
     views.render_comparison(loaded[1], job.result())
 else:
     st.caption("Colonnes CLP : Partie 3 complet et supplément sous-sol (Partie 1, page 5). "
-               "Dalles, semelles et poutres : dernière page.")
+               "Radiers : fichier complet. Dalles, semelles et poutres : dernière page.")
     try:
         sources = configured_inputs(project_dir)
     except ValueError as error:
         st.info(str(error))
         st.stop()
-    st.info("Radiers : lecteur à venir. Ils ne sont pas inclus dans ces résultats.")
     with st.expander("Fichiers utilisés"):
         for _, path in input_files(sources):
             st.write(path.name)

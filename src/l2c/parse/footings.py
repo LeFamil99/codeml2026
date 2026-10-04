@@ -4,6 +4,7 @@ Same template in all four projects (measured): a schedule table
     NOMENCLATURE DES SEMELLES ISOLÉES
     TYPE | LONGUEUR | LARGEUR | ÉPAISSEUR | ARM. LONG. | ARM. TRANS.
     TYPE C | 11'-1" | 11'-1" | 2'-0" | 9-25M | 9-25M
+(a cell can stack two lines: WP2 TYPE D is ``10-20M`` over ``+ ÉP. 15M@300``)
 and, on the plan, an isolated type letter beside each footing (CLP L-13 -> ``C``).
 A footing record = that mark's grid intersection + its schedule row's bars.
 """
@@ -48,17 +49,27 @@ def parse_schedule(page: PreparedPage) -> tuple[dict[str, dict], tuple | None]:
 
     rows: dict[str, dict] = {}
     y_last = header.cy
+    heads = []
     for w in sorted(words, key=lambda w: w.cy):
         if w.text != "TYPE" or abs(w.x0 - header.x0) > 8 or w.cy <= header.cy + 2:
             continue
         if w.cy - y_last > 30:            # the table ended
             break
+        heads.append(w)
+        y_last = w.cy
+    y_last = header.cy
+    for n, w in enumerate(heads):
         line = [o for o in _line(words, w) if header.x0 - 5 <= o.x0 <= x_hi]
         if len(line) < 2:
             continue
         name = line[1].text
+        # the row's band reaches halfway to its neighbours, so a two-line cell is whole
+        up = (w.cy - (heads[n - 1].cy if n else header.cy)) / 2
+        down = (heads[n + 1].cy - w.cy) / 2 if n + 1 < len(heads) else up
+        band = sorted((o for o in words if -up < o.cy - w.cy < down
+                       and line[1].x1 < o.x0 <= x_hi), key=lambda o: (round(o.cy), o.x0))
         cells: dict[int, list[str]] = {}
-        for o in line[2:]:
+        for o in band:
             if not arm_cols or not (_QTY.match(o.text) or _SPC.match(o.text)):
                 continue
             k = min(range(len(arm_cols)), key=lambda i: abs(arm_cols[i] - o.cx))
@@ -104,15 +115,15 @@ def _pedestal(page: PreparedPage, w, reach: float = 80.0):
     return best[1] if best else None
 
 
-def _bars(token: str | None, system: UnitSystem) -> Armature | None:
-    if not token:
-        return None
-    t = token.split()[0]
-    if m := _QTY.match(t):
-        return Armature(quantite=int(m.group(1)), diametre=m.group(2))
-    if m := _SPC.match(t):
-        return Armature(diametre=m.group(1), espacement_mm=parse_spacing(token, system))
-    return None
+def _bars(token: str | None, system: UnitSystem) -> list[Armature]:
+    """Every entry of a schedule cell: the bars, then any ties stacked under them."""
+    out = []
+    for t in (token or "").split():
+        if m := _QTY.match(t):
+            out.append(Armature(quantite=int(m.group(1)), diametre=m.group(2)))
+        elif m := _SPC.match(t):
+            out.append(Armature(diametre=m.group(1), espacement_mm=parse_spacing(t, system)))
+    return out
 
 
 def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord], dict]:
@@ -154,7 +165,7 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
         if box is None:
             cost = min(1.0, cost + 0.3)
         row = schedule[w.text]
-        bars = [b for b in (_bars(row["long"], system), _bars(row["trans"], system)) if b]
+        bars = _bars(row["long"], system) + _bars(row["trans"], system)
         records.append(ElementRecord(
             id=f"{page.sheet_id}_{element or 'p%d#%d' % (page.index + 1, k)}_plan",
             source="plan", fichier=page.fichier, feuillet=page.sheet_id,

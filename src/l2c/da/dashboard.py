@@ -1,4 +1,4 @@
-"""Dashboard DA runner: full column schedule; last page for other DA types.
+"""Dashboard DA runner: full column/radier files; last page for other DA types.
 
 The older generic readers in pipeline.py remain a historical CLI baseline. This
 runner never inventories or reads their files, PDF text layers, or original plans.
@@ -22,7 +22,7 @@ from ..beam_records import align_beam_records, BEAM_FORMAT
 from ..column_records import align_column_records, COLUMN_FORMAT
 from ..record_formats import align_records, FORMAT_VERSION
 from ..pipeline import ProjectResult, SheetReport
-from .parsers import colonne_clp, dalle_clp, poutre_clp, semelle_clp
+from .parsers import colonne_clp, dalle_clp, poutre_clp, radier_clp, semelle_clp
 from .jobs import write_pickle
 
 PARSER_VERSION = "clp-image-parsers-v2-all-slabs"
@@ -35,6 +35,7 @@ CLP_FILES = {
     "dalle": "DA/Dalles/CLP_DALLE NIV 3.pdf",
     "semelle": "DA/Fondations/CLP_SEMELLES FND.pdf",
     "poutre": "DA/Poutres/CLP_POUTRES.pdf",
+    "radier": "DA/Fondations/CLP_RADIERS.pdf",
 }
 
 
@@ -44,7 +45,7 @@ InputSource = str | Path | Sequence[str | Path]
 def configured_inputs(project_dir: str) -> dict[str, tuple[Path, ...]]:
     root = Path(project_dir).expanduser()
     if root.name.upper() != "CLP":
-        raise ValueError("Les quatre lecteurs DA actuels sont disponibles pour CLP uniquement.")
+        raise ValueError("Les cinq lecteurs DA actuels sont disponibles pour CLP uniquement.")
     inputs = {kind: (root / relative,) for kind, relative in CLP_FILES.items()}
     supplement = inputs["colonne"][0].with_name(COLUMN_SUPPLEMENT)
     if supplement.is_file():
@@ -107,8 +108,14 @@ def _beams(page, filename):
     return poutre_clp.records(rows), diagnostics
 
 
+def _radiers(page, filename):
+    result = radier_clp.parse_page(page, filename, check=False)
+    return radier_clp.records(result, filename), asdict(result)
+
+
 PARSERS: dict[str, Callable] = {
     "colonne": _columns, "dalle": _slabs, "semelle": _footings, "poutre": _beams,
+    "radier": _radiers,
 }
 
 
@@ -124,7 +131,7 @@ def file_checkpoint(kind, path, directory):
 
 
 def last_page_only(kind, path):
-    return kind != "colonne" or Path(path).name == COLUMN_SUPPLEMENT
+    return kind not in {"colonne", "radier"} or (kind == "colonne" and Path(path).name == COLUMN_SUPPLEMENT)
 
 
 def load_checkpoint(path, fingerprint):
@@ -227,7 +234,7 @@ def run_da(project_dir: str, progress=None,
                     page_progress(path.name, number, len(document), False, False)
                 page_fingerprint = [*fingerprint, "page", number] if fingerprint else None
                 page_cache = None
-                if checkpoints and kind == "colonne":
+                if checkpoints and kind in {"colonne", "radier"}:
                     page_directory = checkpoints / "pages"
                     page_directory.mkdir(mode=0o700, exist_ok=True)
                     key = hashlib.sha256(json.dumps(page_fingerprint).encode()).hexdigest()
@@ -287,7 +294,7 @@ def run_da(project_dir: str, progress=None,
                                                   "records": page_records, "sheet": report})
                 recs.extend(page_records)
                 reports.append(report)
-                if page_progress and kind == "colonne":
+                if page_progress and kind in {"colonne", "radier"}:
                     page_progress(path.name, number, len(document), True, cached is not None)
         if kind == "colonne" and all("cells" in s.diagnostics for s in reports):
             # Reuse the column parser's existing coordinate/storey deduplication
@@ -311,7 +318,7 @@ def run_da(project_dir: str, progress=None,
             payload = {"fingerprint": fingerprint, "records": recs, "sheets": reports,
                        "sheet": reports[0]}
             write_pickle(checkpoint, payload)
-            if page_progress and kind != "colonne":
+            if page_progress and kind not in {"colonne", "radier"}:
                 page_progress(path.name, reports[0].page,
                               reports[0].diagnostics['document_pages'], True, False)
             if file_done:
@@ -345,11 +352,11 @@ def run_da(project_dir: str, progress=None,
         "imperial", {"basis": "CLP fabricator notation; dedicated parsers convert inches to mm"},
         align_records(records), sheets, round(time.monotonic() - started, 2),
         meta={"parser_version": PARSER_VERSION, "files": len(files), "pages": len(sheets),
-              "inputs": sources, "last_page_only": "colonne" not in inputs,
-              "page_policy": {kind: "all" if kind == "colonne" else "last" for kind in inputs},
+              "inputs": sources, "last_page_only": not ({"colonne", "radier"} & inputs.keys()),
+              "page_policy": {kind: "all" if kind in {"colonne", "radier"} else "last" for kind in inputs},
               "tiers": {3: len(sheets)},
               "checkpoint_hits": checkpoint_hits,
               "page_checkpoint_hits": page_checkpoint_hits,
               "column_record_format": COLUMN_FORMAT,
               "spec_format": FORMAT_VERSION,
-              "pending_types": ["radier"], "scope": "four CLP format parsers; radiers pending"})
+              "pending_types": [], "scope": "five CLP format parsers"})

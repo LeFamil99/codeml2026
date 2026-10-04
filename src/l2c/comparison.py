@@ -26,6 +26,8 @@ def group_key(record):
     layer = normalize(getattr(record.debug, "layer", ""))
     if record.type_element == "dalle" and not layer:
         layer = normalize(getattr(record.debug, "reinforcement_kind", "")) or "INCONNU"
+    if record.type_element == "radier":
+        layer = f"{layer} · {normalize(getattr(record.debug, 'direction', ''))}"
     coordinate = re.sub(r"\s", "", normalize(record.element)).replace("–", "-")
     coordinate = re.sub(r"(?<=\d)\.0(?=-|$)", "", coordinate)
     return record.type_element, level(record), layer, coordinate
@@ -114,7 +116,7 @@ def compare(plan, atelier):
         pairs, missing, extra = match_bars(left, right)
         if key[:3] not in scopes:
             status, reason = "out_of_scope", "Type, niveau ou couche absent des résultats DA chargés."
-        elif coordinate == "UNKNOWN" or (not storey and kind != "poutre") or layer == "INCONNU":
+        elif coordinate == "UNKNOWN" or (not storey and kind != "poutre") or "INCONNU" in layer:
             status, reason = "review", "Localisation, niveau ou couche non résolu : appariement à vérifier."
         elif not a:
             status, reason = "missing_plan", "Élément trouvé dans les DA uniquement."

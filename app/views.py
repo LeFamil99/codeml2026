@@ -79,7 +79,11 @@ def render_comparison(plan, atelier):
     if selected:
         colors = {"Armatures différentes": "#ffe0da", "Absent du plan": "#ffe7ba",
                   "Absent des DA": "#fff3b0", "À vérifier": "#e1edff"}
-        styled = table.style.apply(lambda row: [f"background-color: {colors.get(row.Statut, '#e4f3e6')}" ] * len(row), axis=1)
+        styled = table.style.apply(
+            lambda row: [
+                f"background-color: {colors.get(row.Statut, '#e4f3e6')}; color: #17212b"
+            ] * len(row), axis=1,
+        )
         st.dataframe(styled, hide_index=True, width="stretch")
         index = st.selectbox("Élément à examiner", range(len(selected)),
             format_func=lambda i: f"{TYPE_LABELS[selected[i]['type_element']]} · {selected[i]['element']} · "
@@ -128,13 +132,12 @@ ATELIER = Dataset(
     json_name="elements_atelier.json", done_label="Pages traitées", noun="éléments d'armature extraits des dessins d'atelier",
     scope_md=(
         "Avancement détaillé : **DA_PLAN.md**.\n\n"
-        "- ✅ Quatre lecteurs CLP : colonnes, dalles, semelles et poutres\n"
-        "- ✅ Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; autres types : dernière page\n"
+        "- ✅ Cinq lecteurs CLP : colonnes, dalles, semelles, poutres et radiers\n"
+        "- ✅ Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; radiers : fichier complet ; autres types : dernière page\n"
         "- ✅ Nettoyage des résultats, dédoublonnage et JSON annexe A\n"
-        "- ⬜ Radiers : lecteur à venir\n"
         "- ⬜ Autres fichiers, projets et sélection directe des PDF dans l'interface\n\n"
         "Les lecteurs DA sont **aveugles** : ils ne voient jamais les valeurs du plan. "
-        "Un fichier non lu est listé avec son motif. Les radiers restent hors périmètre."
+        "Un fichier non lu est listé avec son motif."
     ),
 )
 

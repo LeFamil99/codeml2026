@@ -21,23 +21,30 @@ from ..units import MM_PER_INCH
 #: ``16"x24"`` / ``16 1/4"X21"`` (imperial) or ``300x300`` / ``400x750`` (metric mm)
 _DIM_IMPERIAL = re.compile(r'^(\d+(?:\s+\d+/\d+)?)"\s*[xX]\s*(\d+(?:\s+\d+/\d+)?)"$')
 _DIM_METRIC = re.compile(r"^(\d{3,4})\s*[xX]\s*(\d{3,4})$")
+#: round columns: ``500mmØ`` (EspCa3B, LIGREP) / ``24"Ø``; the symbol is a filled disc
+_DIM_ROUND = re.compile(r'^(?:(\d{3,4})\s*mm|(\d+(?:\s+\d+/\d+)?)")\s*Ø$')
 
 
 def parse_dimensions(text: str) -> tuple[float, float] | None:
     """Stated section size -> (width_mm, height_mm)."""
+    def to_mm(s: str) -> float:
+        parts = s.split()
+        total = float(parts[0])
+        if len(parts) > 1:
+            num, den = parts[1].split("/")
+            total += int(num) / int(den)
+        return total * MM_PER_INCH
+
     m = _DIM_IMPERIAL.match(text)
     if m:
-        def to_mm(s: str) -> float:
-            parts = s.split()
-            total = float(parts[0])
-            if len(parts) > 1:
-                num, den = parts[1].split("/")
-                total += int(num) / int(den)
-            return total * MM_PER_INCH
         return to_mm(m.group(1)), to_mm(m.group(2))
     m = _DIM_METRIC.match(text)
     if m:
         return float(m.group(1)), float(m.group(2))
+    m = _DIM_ROUND.match(text)
+    if m:
+        d = float(m.group(1)) if m.group(1) else to_mm(m.group(2))
+        return d, d
     return None
 
 

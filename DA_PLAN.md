@@ -12,22 +12,23 @@ Design rationale and the measurements behind it live in [PLAN.md](PLAN.md) §5
 
 ## Status
 
-The **DA UI now uses the four CLP image parsers** through `l2c.da.dashboard`:
+The **DA UI now uses the five CLP image parsers** through `l2c.da.dashboard`:
 columns Partie 3 plus Partie 1's fifth-page basement supplement, **all six slab PDFs** in `DA/Dalles`, isolated footings FND and
-beams. The three fixed paths and slab folder are configured relative to the
+beams and the complete `DA/Fondations/CLP_RADIERS.pdf`. The four fixed paths and slab folder are configured relative to the
 selected CLP folder. Columns now read all pages of Partie 3, with the strip limit
 disabled; the other readers retain their existing page selection. Deduplicated Appendix-A records
 populate all tables and the `CLP_elements_atelier.json` download. Selected file
 timestamps/sizes, slab folder membership and parser version control the DA cache;
-the current folder supplies ten files, with thirteen selected pages: the four-page
+the current folder supplies eleven files, with fourteen selected pages: the four-page
 current column schedule and its separate basement supplement. Earlier repeated
 column sheets stay superseded. Completed older column-cell checkpoints are upgraded
 by re-reading only cells whose floor boundaries changed; other DA checkpoints are reused. Its regeneration button
-reruns these readers without invalidating the plan cache. Radiers are explicitly
-pending, handled separately by the teammate. Other projects have no connected
+reruns these readers without invalidating the plan cache. The radier parser is now connected, with page checkpoints and the same final
+plan/DA format: foundation level, rang, horizontal/vertical role, diameter/spacing.
+Fabrication counts and marks remain in debug evidence; count-only requirements are preserved. Other projects have no connected
 DA readers yet. The runner accepts explicit input paths for future UI uploads.
 
-All four types now use `l2c.record_formats` for final storage, UI and comparison.
+All five types now use `l2c.record_formats` for final storage, UI and comparison.
 Plan/DA records share role vocabulary/order, level aliases and reinforcement field
 meanings. Fabrication marks and spaced-beam piece counts stay in debug evidence;
 explicit lengths and independent directions/zones remain preserved. Existing typed

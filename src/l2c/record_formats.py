@@ -12,7 +12,7 @@ from .column_records import align_column_records
 from .model import Armature
 
 FORMAT_VERSION = "shared-element-spec-v1"
-SUPPORTED = {"colonne","semelle","dalle","poutre"}
+SUPPORTED = {"colonne","semelle","dalle","poutre","radier"}
 
 
 def fold(value):
@@ -31,6 +31,9 @@ def normalize_level(value):
 
 def normalize_role(kind, value):
     role = fold(value).strip(" .:_-")
+    if kind == "radier":
+        return {"HORIZONTAL":"horizontal", "HORIZONTALE":"horizontal",
+                "VERTICAL":"vertical", "VERTICALE":"vertical"}.get(role,"INCONNU")
     if kind == "poutre":
         return {"LONG":"longitudinale","LONGITUDINALE":"longitudinale",
                 "PEAU":"peau","SKIN":"peau","ETRI":"étriers",
@@ -70,7 +73,15 @@ def align_records(records):
             output.append(record.model_copy(update={"debug":debug}))
             continue
         kind = record.type_element
+        if kind == "radier":
+            debug.niveau = debug.niveau or "FONDATION"
+            layer = fold(getattr(debug, "layer", None))
+            layer = re.sub(r"^RANGS?\s*", "", layer).strip(" :")
+            debug.layer = layer or "INCONNU"
+            debug.direction = normalize_role(kind, getattr(debug, "direction", None))
         labels = getattr(debug,"roles",[])
+        if kind == "radier":
+            labels = [debug.direction] * len(record.armature)
         if not labels and kind == "semelle":
             labels = footing_roles(record)
         if kind == "semelle" and not getattr(debug,"footing_type",None):
@@ -94,11 +105,12 @@ def align_records(records):
             # Fabricator shape/mark identifiers are not plan design requirements.
             # Explicit physical lengths retain exactly the same mm meaning.
             fields["repere"] = None
-            if kind == "poutre" and role in {"peau","étriers"} and bar.espacement_mm is not None:
+            if (kind == "radier" or (kind == "poutre" and role in {"peau","étriers"})) and bar.espacement_mm is not None:
                 fields["quantite"] = None  # pieces cut vs a spacing requirement
             entries.append((role,Armature(**fields),i))
         orders = {"semelle":["LONG","TRAN"],"dalle":["NUM","ALP"],
-                  "poutre":["longitudinale","peau","étriers"]}[kind]
+                  "poutre":["longitudinale","peau","étriers"],
+                  "radier":["horizontal","vertical"]}[kind]
         entries.sort(key=lambda item: orders.index(item[0]) if item[0] in orders else len(orders))
         debug.roles = [role for role,_,_ in entries]
         debug.reinforcement_details = details

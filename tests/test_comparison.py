@@ -81,11 +81,11 @@ def test_comparison_ui_uses_loaded_results_without_submitting_another_job(
         at.segmented_control[0].set_value("Dessins d'atelier").run()
         wait_for_da(at)
         at.segmented_control[0].set_value("Comparaison").run()
-        assert not at.exception and len(connected_parsers) == 5
+        assert not at.exception and len(connected_parsers) == 6
         metrics = {m.label: m.value for m in at.metric}
         assert metrics['Armatures différentes'] == '1'
         assert 'L-13' in list(at.dataframe[0].value['Élément'])
         at.run()
-        assert not at.exception and len(connected_parsers) == 5
+        assert not at.exception and len(connected_parsers) == 6
     finally:
         st.cache_data.clear()

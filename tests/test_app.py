@@ -110,11 +110,11 @@ def test_da_section_reuses_the_same_layout(clp_da):
 
 
 def test_da_scope_includes_all_six_slab_last_pages(clp_da):
-    """Three fixed files plus all six slab files; radiers are explicitly pending."""
+    """Four column pages plus the basement supplement and eight other last pages and the radier sheet."""
     m = {x.label: x.value for x in clp_da.metric}
-    assert m["Pages traitées"] == "9"
-    assert m["Pages lues par OCR"] == "9"
-    assert m["Radiers"] == "À venir"
+    assert m["Pages traitées"] == "14"
+    assert m["Pages lues par OCR"] == "14"
+    assert int(m["Radiers"]) > 0
 
 
 def test_da_units_come_from_the_shop_drawings_themselves(clp_da):
