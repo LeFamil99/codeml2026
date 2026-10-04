@@ -16,7 +16,7 @@ How it reads the image:
 3. every other cell: no ink -> empty; ink -> OCR its text, parse each line as a bar line.
 
 Run (page 1 by default; logs every step with timings):
-    PYTHONPATH=src python -m l2c.da.parsers.colonne_clp                 # CLP Partie 1, page 1
+    PYTHONPATH=src python -m l2c.da.parsers.colonne_clp                 # CLP Partie 3, page 1
     PYTHONPATH=src python -m l2c.da.parsers.colonne_clp FILE.pdf --page 4 --check
     PYTHONPATH=src python -m l2c.da.parsers.colonne_clp --all-pages --quiet
 ``--check`` also prints, per cell, what the PDF's hidden text layer says - for
@@ -45,6 +45,7 @@ if __package__ in (None, ""):                      # allow `python colonne_clp.p
 from l2c.da.common import parse_bar_line  # noqa: E402
 from l2c.da.parsers.output import deduplicate, reinforcement_key  # noqa: E402
 from l2c.model import Armature, Debug, ElementRecord  # noqa: E402
+from l2c.column_records import align_column_records  # noqa: E402
 
 log = logging.getLogger("colonne_clp")
 
@@ -240,9 +241,10 @@ def ocr_region(page: pymupdf.Page, rect: pymupdf.Rect, erase_rules: bool = False
     return out
 
 
-def recognise(page: pymupdf.Page, box: pymupdf.Rect, erase_rules: bool = False) -> tuple[str, float]:
+def recognise(page: pymupdf.Page, box: pymupdf.Rect, erase_rules: bool = False,
+              rec_px: float = REC_PX) -> tuple[str, float]:
     h = max(box.height, 1.0)
-    z = min(20.0, max(4.0, REC_PX / h))
+    z = min(20.0, max(4.0, rec_px / h))
     clip = pymupdf.Rect(box.x0 - 0.3 * h, box.y0 - 0.15 * h, box.x1 + 0.3 * h, box.y1 + 0.15 * h)
     img = render(page, clip, z)
     if erase_rules:
@@ -423,12 +425,130 @@ def _worker_task(args):
 
 # ----------------------------------------------------------------- the parser
 def _coordinate(lines: list[str]) -> str | None:
-    for t in lines:
+    # Some drawings repeat the coordinate inside and beside the cross-section.
+    # Prefer the standalone label over a label merged with dimensions by OCR.
+    ordered = sorted(lines, key=lambda t: not COORD.fullmatch(re.sub(r"^[1l|](?=-\d)", "I", t.strip())))
+    for t in ordered:
         for tok in t.replace(" -", "-").replace("- ", "-").split():
             tok = tok.rstrip(".,;:")                     # OCR adds stray dots ("A-15.8.")
+            # In this schedule's coordinate band the narrow capital I is often
+            # recognized as 1 (or lowercase l). Never apply this to bar marks.
+            tok = re.sub(r"^[1l|](?=-\d)", "I", tok)
             if COORD.match(tok):
                 return tok
     return None
+
+
+def read_coordinate(page, rect, what="coordinate"):
+    _, lines, confidence = read_cell(page, rect, what)
+    coordinate = _coordinate(lines)
+    if coordinate is None or coordinate.startswith(("I-", "L-")):
+        inner = pymupdf.Rect(rect.x0+INSET,rect.y0+INSET,rect.x1-INSET,rect.y1-INSET)
+        candidates = []
+        for box, text, score in ocr_region(page, inner, det_zoom=RETRY_ZOOM):
+            if not _coordinate([text]):
+                continue
+            alternate, score = recognise(page,box,rec_px=96)
+            value = _coordinate([alternate])
+            if value:
+                standalone = bool(COORD.fullmatch(re.sub(r"^[1l|](?=-\d)","I",alternate.strip())))
+                candidates.append((standalone,score,value,alternate))
+        if candidates:
+            _, confidence, coordinate, text = max(candidates)
+            lines = [*lines,text]
+    return coordinate, lines, confidence
+
+
+def schedule_layout(page: pymupdf.Page, table: Table):
+    """Use observed floor labels to refine ruled rows, excluding foundation levels.
+
+    Tréfonds, radier and empattement are reference elevations within/below the
+    basement column, not additional building storeys. Some full-width rules are
+    missing; others cross a column at a reference elevation. The floor labels are
+    the authoritative row ends. Read their whole strip once, without pairing a
+    cropped elevation with an unrelated neighbouring name.
+    """
+    zone = pymupdf.Rect(max(0., table.xs[0] - LABEL_ZONE), table.ys[0],
+                        table.xs[0], table.ys[-1])
+    items = ocr_region(page, zone)
+    observed = {}
+    for box, text, _ in items:
+        level = _level([text])
+        if not level or not (level == "TOIT" or level.startswith(("NIVEAU", "REZ", "SOUS-SOL"))):
+            continue
+        # NIVEAU 5 and NIVEAU 5-TOIT can both be printed: the last is
+        # the actual floor boundary, while the earlier one is a local offset.
+        observed[level] = max(observed.get(level, 0.), box.y1)
+    if not any(level.startswith("SOUS-SOL") for level in observed):
+        # Keep the old geometry if the label strip is unreadable, rather than
+        # deleting cells or guessing a basement from the original plan.
+        names, elevations, hints = read_storeys(page, zone, table.ys)
+        names, inferred = infer_levels(names, hints)
+        return table.ys, names, elevations, inferred
+    lowest = max(y for level, y in observed.items() if level.startswith("SOUS-SOL"))
+    marks = []
+    for level, y in observed.items():
+        if table.ys[0] + 20 < y <= lowest + 1:
+            close = min(table.ys, key=lambda v: abs(v-y))
+            # A reference (e.g. RADIER) 17 pt below SOUS-SOL must not
+            # swallow its boundary. Only snap very close ruled lines.
+            marks.append((close if abs(close-y) <= 4 else y, level))
+    marks.sort()
+    # Retain intermediate detected rows whose floor label was missed, so the
+    # usual conservative inference can still recover them. Rules below the
+    # lowest floor and the explicitly labelled TRÉFONDS reference are excluded.
+    refs = [box.y1 for box, text, _ in items
+            if (_level([text]) or "").startswith(("TRÉFOND", "RADIER", "EMPATTEMENT"))]
+    for y in table.ys[1:-1]:
+        if y < lowest-4 and all(abs(y-v) > 20 for v, _ in marks) and all(abs(y-v) > 20 for v in refs):
+            marks.append((y, None))
+    marks.sort()
+    ys = [table.ys[0]] + [y for y, _ in marks] + [table.ys[-1]]
+    names, inferred = infer_levels([level for _, level in marks])
+    elevations = []
+    for y, _ in marks:
+        nearby = [(abs(box.y1-y), text) for box, text, _ in items
+                  if ELEVATION.search(text) and 0 <= y-box.y1 <= 35]
+        elevations.append(_elevation([min(nearby)[1]]) if nearby else None)
+    return ys, names, elevations, inferred
+
+
+def repair_cached_page(page: pymupdf.Page, cells: list[Cell], system="imperial") -> list[Cell]:
+    """Reuse finished OCR; re-read only cells crossing corrected floor boundaries.
+
+    This also upgrades old page checkpoints without another full document OCR.
+    Coordinates are recovered from the schedule's own cached header lines.
+    """
+    # The old cells omit the bottom coordinate band, whose end can be recovered
+    # from ruled geometry. Table families may share the same rows.
+    tables = find_tables(page)
+    if not tables:
+        raise ValueError("Cannot recover column layout; existing OCR checkpoints remain intact")
+    output = []
+    for table in tables:
+        row_ys, names, elevations, inferred = schedule_layout(page, table)
+        for x0, x1 in zip(table.xs, table.xs[1:]):
+            strip = [c for c in cells if abs(c.x0-x0)<1 and abs(c.x1-x1)<1]
+            coordinate = next((c.coordinate for c in strip if c.coordinate), None)
+            if coordinate is None:
+                header = min(strip, key=lambda c: c.y0) if strip else None
+                coordinate = _coordinate(header.lines) if header and not header.bars else None
+            if coordinate is None:
+                coordinate, _, _ = read_coordinate(page, pymupdf.Rect(x0,table.ys[-2],x1,table.ys[-1]), "coordinate retry")
+            for j, (y0,y1) in enumerate(zip(row_ys[:-2],row_ys[1:-1])):
+                exact = next((c for c in strip if abs(c.y0-y0)<1 and abs(c.y1-y1)<1),None)
+                if exact:
+                    c = Cell(**asdict(exact))
+                    c.coordinate, c.level = coordinate, names[j]
+                    c.elevation, c.storey_inferred = elevations[j], inferred[j]
+                else:
+                    rect = pymupdf.Rect(x0,y0,x1,y1)
+                    status, lines, conf, bars, summary, reason, _ = read_data_cell(page,rect,"corrected row",system)
+                    c = Cell(page.number+1,coordinate,names[j],round(x0,1),round(y0,1),
+                             round(x1,1),round(y1,1),status,lines,bars,conf,inferred[j],
+                             elevations[j],summary,reason)
+                output.append(c)
+    return output
 
 
 def _level(lines: list[str]) -> str | None:
@@ -581,11 +701,10 @@ def parse_page(page: pymupdf.Page, system: str = "imperial", check: bool = False
             t = time.time()
             log.info("table %d - step 1/3: reading the coordinate in the bottom cell of %d strips",
                      ti, len(strips))
-            tasks = [("bottom", tuple(pymupdf.Rect(xs[i], ys[-2], xs[i + 1], ys[-1])),
-                      f"strip {i} bottom", system) for i in strips]
             coords = {}
-            for i, (_, lines, _) in zip(strips, run(tasks)):
-                coords[i] = _coordinate(lines)
+            for i in strips:
+                coords[i], lines, _ = read_coordinate(page,
+                    pymupdf.Rect(xs[i], ys[-2], xs[i+1], ys[-1]), f"strip {i} bottom")
                 log.info("    strip %2d (x %.0f-%.0f): coordinate %s   [bottom cell: %s]",
                          i, xs[i], xs[i + 1], coords[i] or "NOT FOUND", " / ".join(lines) or "-")
             log.info("    step 1 took %.1fs", time.time() - t)
@@ -594,12 +713,11 @@ def parse_page(page: pymupdf.Page, system: str = "imperial", check: bool = False
             zx0 = max(0.0, xs[0] - LABEL_ZONE)
             log.info("table %d - step 2/3: reading the storey of %d rows in the label zone x %.0f-%.0f",
                      ti, len(ys) - 2, zx0, xs[0])
-            zone = pymupdf.Rect(zx0, ys[0], xs[0], ys[-2])
-            read_levels, elevations, hints = read_storeys(page, zone, ys)
+            ys, names, elevations, inferred = schedule_layout(page, table)
+            read_levels = names
             for j in range(len(ys) - 2):
                 log.info("    row %2d (y %.0f-%.0f): storey %s, elevation %s",
                          j, ys[j], ys[j + 1], read_levels[j] or "NOT READ", elevations[j] or "-")
-            names, inferred = infer_levels(read_levels, hints)
             levels = dict(enumerate(names))
             for j, (r, nm, inf) in enumerate(zip(read_levels, names, inferred)):
                 if inf:
@@ -724,7 +842,7 @@ def records(cells: list[Cell], filename: str) -> list[ElementRecord]:
                         storey_inferred=cell.storey_inferred, elevation=cell.elevation,
                         duplicate_conflict=row.get("duplicate_conflict", False),
                         reason=row.get("reason") or cell.reason)))
-    return output
+    return align_column_records(output)
 
 
 def main(argv=None) -> int:

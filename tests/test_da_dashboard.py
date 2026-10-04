@@ -11,6 +11,47 @@ from l2c.da.parsers import colonne_clp, dalle_clp, poutre_clp, semelle_clp
 from conftest import wait_for_da
 
 
+def test_column_supplement_adds_only_last_sheet_and_current_revision_wins(
+        tmp_path, connected_parsers):
+    project = sources(tmp_path)
+    path = project / "DA/Colonnes" / dashboard.COLUMN_SUPPLEMENT
+    with pymupdf.open() as document:
+        for _ in range(5):
+            document.new_page()
+        document.save(path)
+    result = dashboard.run_da(str(project))
+    assert [call[1] for call in connected_parsers if call[0] == "colonne"] == [1, 2, 5]
+    assert len(dashboard.configured_inputs(str(project))["colonne"]) == 2
+    # Fake readers repeat K-6: the earlier release must not restore it.
+    assert len([r for r in result.records if r.type_element == "colonne"]) == 1
+    report = next(s for s in result.sheets if s.fichier == dashboard.COLUMN_SUPPLEMENT)
+    assert report.page == 5 and report.records == 0
+    assert report.diagnostics["last_page_only"] is True
+    assert report.diagnostics["superseded_by_current_schedule"]
+
+
+def test_old_column_page_cells_upgrade_without_reparsing_other_types(
+        tmp_path, monkeypatch, connected_parsers):
+    project = sources(tmp_path)
+    directory = tmp_path / "cache"
+    current = dashboard.COLUMN_SCOPE
+    monkeypatch.setattr(dashboard, "COLUMN_SCOPE", "all-pages-v1")
+    dashboard.run_da(str(project), checkpoint_dir=directory)
+    initial_calls = len(connected_parsers)
+    monkeypatch.setattr(dashboard, "COLUMN_SCOPE", current)
+    repaired = []
+    def repair(page, cells):
+        repaired.append(page.number+1)
+        return cells
+    monkeypatch.setattr(colonne_clp, "repair_cached_page", repair)
+    result = dashboard.run_da(str(project), checkpoint_dir=directory)
+    assert repaired == [1, 2]
+    assert len(connected_parsers) == initial_calls
+    assert result.meta["checkpoint_hits"] == 3
+    assert result.meta["page_checkpoint_hits"] == 2
+    assert dashboard.run_da(str(project), checkpoint_dir=directory).meta["checkpoint_hits"] == 4
+
+
 def sources(tmp_path, all_slabs=False):
     project = tmp_path / "CLP"
     relatives = list(dashboard.CLP_FILES.values())
@@ -80,7 +121,7 @@ def connected_parsers(monkeypatch):
     return called
 
 
-def test_four_real_adapters_read_only_last_pages_and_keep_clean_records(
+def test_adapters_read_all_column_pages_and_other_last_pages(
         tmp_path, monkeypatch, connected_parsers):
     project = sources(tmp_path)
     # No native-text path or old generic reader may participate in this runner.
@@ -92,8 +133,8 @@ def test_four_real_adapters_read_only_last_pages_and_keep_clean_records(
     monkeypatch.setattr(l2c.da.pipeline, "run_da", forbidden)
     progress = []
     result = dashboard.run_da(str(project), progress=lambda *args: progress.append(args))
-    assert len(connected_parsers) == 4 and {call[1] for call in connected_parsers} == {2}
-    assert len(result.sheets) == 4 and all(s.page == 2 for s in result.sheets)
+    assert len(connected_parsers) == 5 and [call[1] for call in connected_parsers if call[0] == 'colonne'] == [1, 2]
+    assert len(result.sheets) == 5 and all(s.page == 2 for s in result.sheets if s.type_element != 'colonne')
     assert all(s.status == "extracted" and s.tier == 3 for s in result.sheets)
     assert len(result.records) == 4
     assert {r.type_element for r in result.records} == set(dashboard.CLP_FILES)
@@ -193,18 +234,18 @@ def test_interrupted_run_resumes_completed_files_and_invalidates_changed_inputs(
     monkeypatch.setitem(dashboard.PARSERS, "dalle", original)
     resumed = dashboard.run_da(str(project), checkpoint_dir=checkpoints)
     assert len(resumed.records) == 4 and resumed.meta["checkpoint_hits"] == 1
-    assert sum(call[0] == "colonne" for call in connected_parsers) == 1
+    assert sum(call[0] == "colonne" for call in connected_parsers) == 2
     saved = [r.to_schema() for r in resumed.records]
     cached = dashboard.run_da(str(project), checkpoint_dir=checkpoints)
     assert cached.meta["checkpoint_hits"] == 4
     assert [r.to_schema() for r in cached.records] == saved
-    assert len(connected_parsers) == 4
+    assert len(connected_parsers) == 5
     slab = dashboard.configured_inputs(str(project))["dalle"][0]
     slab.write_bytes(slab.read_bytes() + b"\n")
     changed = dashboard.run_da(str(project), checkpoint_dir=checkpoints)
-    assert changed.meta["checkpoint_hits"] == 3 and len(connected_parsers) == 5
+    assert changed.meta["checkpoint_hits"] == 3 and len(connected_parsers) == 6
     fresh = dashboard.run_da(str(project), checkpoint_dir=checkpoints, reuse_checkpoints=False)
-    assert fresh.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 9
+    assert fresh.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 11
 
 
 def test_column_adapter_keeps_levels_conflicts_and_zero_confidence():
@@ -218,6 +259,56 @@ def test_column_adapter_keeps_levels_conflicts_and_zero_confidence():
     assert {r.debug.niveau for r in records} == {"NIVEAU 2", "NIVEAU 3"}
 
 
+def test_column_scope_only_invalidates_columns_and_keeps_other_file_caches(
+        tmp_path, monkeypatch, connected_parsers):
+    project = sources(tmp_path)
+    cache = tmp_path / 'cache'
+    first = dashboard.run_da(str(project), checkpoint_dir=cache)
+    stamp = dashboard.input_stamp(str(project))
+    inputs = dashboard.configured_inputs(str(project))
+    other_keys = {kind: dashboard.file_checkpoint(kind, paths[0], cache)[0]
+                  for kind, paths in inputs.items() if kind != 'colonne'}
+    monkeypatch.setattr(dashboard, 'COLUMN_SCOPE', 'all-pages-next')
+    assert dashboard.input_stamp(str(project)) != stamp
+    for kind, fingerprint in other_keys.items():
+        assert dashboard.file_checkpoint(kind, inputs[kind][0], cache)[0] == fingerprint
+    second = dashboard.run_da(str(project), checkpoint_dir=cache)
+    assert second.meta['checkpoint_hits'] == 3
+    assert len(connected_parsers) == 7  # Only the two column pages reread.
+    assert first.meta['page_policy']['colonne'] == 'all'
+    assert len(second.sheets) == 5 and not second.meta['last_page_only']
+
+
+def test_interrupted_column_pdf_resumes_saved_page_and_deduplicates_across_pages(
+        tmp_path, monkeypatch, connected_parsers):
+    project = sources(tmp_path)
+    cache = tmp_path / 'cache'
+    original = colonne_clp.parse_page
+    events = []
+    def interrupted(page, **kwargs):
+        if page.number == 1:
+            raise RuntimeError('crash in column page two')
+        return original(page, **kwargs)
+    monkeypatch.setattr(colonne_clp, 'parse_page', interrupted)
+    with pytest.raises(RuntimeError, match='page two'):
+        dashboard.run_da(str(project), checkpoint_dir=cache,
+                         page_progress=lambda *args: events.append(args))
+    assert len(list((cache/'pages').glob('*.pkl'))) == 1
+    assert not list(cache.glob('*.pkl'))
+    assert any(event[1] == 1 and event[3] for event in events)
+    monkeypatch.setattr(colonne_clp, 'parse_page', original)
+    resumed = dashboard.run_da(str(project), checkpoint_dir=cache)
+    assert resumed.meta['page_checkpoint_hits'] == 1
+    assert len(connected_parsers) == 5
+    columns = [r for r in resumed.records if r.type_element == 'colonne']
+    assert len(columns) == 1  # Same coordinate/storey/spec on both synthetic pages.
+    reports = [s for s in resumed.sheets if s.type_element == 'colonne']
+    assert [s.page for s in reports] == [1, 2]
+    assert reports[0].diagnostics['file_deduplication']['removed_rows'] == 3
+    assert sum(s.records for s in reports) == 1
+    assert resumed.meta['inputs'][0]['pages'] == [1, 2]
+
+
 def test_corrupt_checkpoint_is_reparsed_and_version_change_invalidates_cache(
         tmp_path, monkeypatch, connected_parsers):
     project = sources(tmp_path)
@@ -229,11 +320,11 @@ def test_corrupt_checkpoint_is_reparsed_and_version_change_invalidates_cache(
     checkpoint.write_bytes(b"incomplete write")
     assert len(dashboard.checkpoint_inventory(inputs, cache)) == 3
     repaired = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert repaired.meta["checkpoint_hits"] == 3 and len(connected_parsers) == 5
+    assert repaired.meta["checkpoint_hits"] == 3 and len(connected_parsers) == 6
     monkeypatch.setattr(dashboard, "PARSER_VERSION", "next-version")
     assert dashboard.checkpoint_inventory(inputs, cache) == []
     changed = dashboard.run_da(str(project), checkpoint_dir=cache)
-    assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 9
+    assert changed.meta["checkpoint_hits"] == 0 and len(connected_parsers) == 11
 
 
 def test_da_ui_uses_the_connected_parsers_and_downloads_their_records(
@@ -263,24 +354,24 @@ def test_da_ui_uses_the_connected_parsers_and_downloads_their_records(
         at.segmented_control[0].set_value("Dessins d'atelier").run()
         wait_for_da(at)
         assert not at.exception
-        assert len(connected_parsers) == 9
+        assert len(connected_parsers) == 10
         metrics = {m.label: m.value for m in at.metric}
-        assert metrics["Radiers"] == "À venir" and metrics["Pages traitées"] == "9"
-        assert metrics["Pages lues par OCR"] == "9"
+        assert metrics["Radiers"] == "À venir" and metrics["Pages traitées"] == "10"
+        assert metrics["Pages lues par OCR"] == "10"
         for filename in (p.name for p in dashboard.configured_inputs(str(project))["dalle"]):
             assert any(filename in text.value for text in at.markdown)
         tables = [df.value for df in at.dataframe if "armature" in df.value]
         assert any("LONG: 11-25M · TRAN: 11-25M" in value
                    for table in tables for value in table.armature)
         at.run()
-        assert not at.exception and len(connected_parsers) == 9
+        assert not at.exception and len(connected_parsers) == 10
         at.segmented_control[0].set_value("Plan L2C").run()
         assert not at.exception
         at.segmented_control[0].set_value("Dessins d'atelier").run()
-        assert not at.exception and len(connected_parsers) == 9
+        assert not at.exception and len(connected_parsers) == 10
         at.button(key="regenerate_atelier").click().run()
         wait_for_da(at)
-        assert not at.exception and len(connected_parsers) == 18
+        assert not at.exception and len(connected_parsers) == 20
         # Capture the serialization actually invoked by the UI download view.
         assert len(downloaded[-1]) == 9
         assert {r["type_element"] for r in downloaded[-1]} == set(dashboard.CLP_FILES)

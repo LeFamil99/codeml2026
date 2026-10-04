@@ -1,6 +1,7 @@
 """Running, completed and failed DA jobs persist across navigation and reruns."""
 import threading
 import json
+import pytest
 
 from l2c.da import jobs, dashboard
 from l2c.pipeline import ProjectResult, SheetReport
@@ -30,14 +31,40 @@ def test_worker_retry_after_crash_reuses_committed_file_and_saves_progress(
     assert retry.result().meta["checkpoint_hits"] == 1
     assert len(retry.snapshot()["saved_files"]) == 4
     assert retry.snapshot()["checkpoint_hits"] == 1
-    assert sum(call[0] == "colonne" for call in connected_parsers) == 1
+    assert sum(call[0] == "colonne" for call in connected_parsers) == 2
     again = restored.ensure(str(project), (), dashboard.PARSER_VERSION, inputs, force=True)
     again.process.future.result(timeout=5)
-    assert again.result().meta["checkpoint_hits"] == 4 and len(connected_parsers) == 4
+    assert again.result().meta["checkpoint_hits"] == 4 and len(connected_parsers) == 5
     assert json.loads((again.directory / "request.json").read_text())["reuse_checkpoints"] is True
 
 
-def test_abrupt_process_exit_keeps_first_pdf_checkpoint_after_manager_reload(tmp_path):
+def test_external_column_cache_reset_reparses_only_columns_in_same_server(
+        tmp_path, connected_parsers, background_jobs):
+    from test_da_dashboard import sources
+    project = sources(tmp_path)
+    inputs = dashboard.configured_inputs(str(project))
+    first = background_jobs.ensure(str(project), (), dashboard.PARSER_VERSION, inputs)
+    first.process.future.result(timeout=5)
+    request = json.loads((first.directory/'request.json').read_text())
+    request['invalidated'] = True
+    jobs.write_json(first.directory/'request.json', request)
+    cache = background_jobs.root/'file_results'
+    for path in [*cache.glob('*.pkl'), *(cache/'pages').glob('*.pkl')]:
+        import pickle
+        saved = pickle.loads(path.read_bytes())
+        if saved['fingerprint'][1] == 'colonne':
+            path.unlink()
+    # Same manager, same source stamp, no force: the invalidated result must go.
+    fresh = background_jobs.ensure(str(project), (), dashboard.PARSER_VERSION, inputs)
+    fresh.process.future.result(timeout=5)
+    assert fresh.directory != first.directory
+    assert fresh.result().meta['checkpoint_hits'] == 3
+    assert len(connected_parsers) == 7
+    assert sum(call[0] != 'colonne' for call in connected_parsers) == 3
+
+
+@pytest.mark.parametrize('interrupt', ['between_files', 'within_column'])
+def test_abrupt_process_exit_keeps_checkpoints_after_manager_reload(tmp_path, interrupt):
     import subprocess
     import sys
     import os
@@ -54,8 +81,9 @@ import os, sys
 from pathlib import Path
 from l2c.da import dashboard, jobs
 def reader(page, filename):
-    assert page.number == 1
-    if sys.argv[2] == 'crash' and 'DALLE' in filename:
+    assert page.number in (0, 1) if 'COLONNES' in filename else page.number == 1
+    if ((sys.argv[2] == 'between_files' and 'DALLE' in filename) or
+        (sys.argv[2] == 'within_column' and 'COLONNES' in filename and page.number == 1)):
         os._exit(137)
     return [], {}
 dashboard.PARSERS.update(colonne=reader, dalle=reader)
@@ -63,16 +91,18 @@ raise SystemExit(jobs.execute_job(Path(sys.argv[1])))
 """
         env = dict(os.environ, PYTHONPATH=str(__import__('pathlib').Path(dashboard.__file__).resolve().parents[2]))
         return subprocess.Popen([sys.executable, "-c", script, str(directory),
-                                 "crash" if crash else "resume"], env=env)
+                                 interrupt if crash else "resume"], env=env)
     root = tmp_path / "jobs"
     first = jobs.JobManager(root, launcher=launch).ensure(str(project), (), "test", inputs)
     assert first.process.wait(timeout=20) == 137
     assert first.snapshot()["status"] == "failed"
-    assert len(first.snapshot()["saved_files"]) == 1
+    assert len(first.snapshot()["saved_files"]) == (1 if interrupt == 'between_files' else 0)
+    assert len(first.snapshot()["saved_pages"]) == (2 if interrupt == 'between_files' else 1)
     restored = jobs.JobManager(root, launcher=launch)
     retry = restored.ensure(str(project), (), "test", inputs, force=True)
     assert retry.process.wait(timeout=20) == 0
-    assert retry.result().meta["checkpoint_hits"] == 1
+    assert retry.result().meta["checkpoint_hits"] == (1 if interrupt == 'between_files' else 0)
+    assert retry.result().meta["page_checkpoint_hits"] == (0 if interrupt == 'between_files' else 1)
     assert len(retry.snapshot()["saved_files"]) == 2
 
 
@@ -106,7 +136,7 @@ def test_failed_run_ui_resumes_without_clearing_completed_files(
         at.button(key='regenerate_atelier').click().run()
         wait_for_da(at)
         assert not at.exception and not at.error
-        assert len(connected_parsers) == 4
+        assert len(connected_parsers) == 5
         assert any('1 fichiers réutilisés' in item.value for item in at.caption)
     finally:
         st.cache_data.clear()

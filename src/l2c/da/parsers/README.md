@@ -23,15 +23,17 @@ The configured paths are relative to the selected **CLP** project folder:
 
 | Parser | Source |
 |---|---|
-| `colonne_clp` | `DA/Colonnes/CLP_COLONNES Partie 3.pdf` |
+| `colonne_clp` | Whole `DA/Colonnes/CLP_COLONNES Partie 3.pdf` plus page 5 of `CLP_COLONNES Partie 1.pdf` |
 | `dalle_clp` | Every PDF directly inside `DA/Dalles/` |
 | `semelle_clp` | `DA/Fondations/CLP_SEMELLES FND.pdf` |
 | `poutre_clp` | `DA/Poutres/CLP_POUTRES.pdf` |
 
-Every parser reads only the last page and every applicable cell/support/elevation.
+The column parser reads every page of Partie 3 and every strip, plus the distinct
+basement schedule on Partie 1's fifth page. Other parsers keep
+their existing last-page selection and read every applicable support/elevation.
 Slabs currently include **six PDFs**: RDC, Tréfond and Niveaux 2, 3, 4 and 5.
-Together with the other three configured files, the DA tab processes **nine last
-pages**. PDF discovery is case-insensitive, ignores non-PDF files and directories,
+Together with the column supplement and the other configured files, the DA tab processes **ten
+files / thirteen selected pages**. PDF discovery is case-insensitive, ignores non-PDF files and directories,
 and uses a stable filename order. Separate files and levels remain separate in
 exports, even when their coordinates and reinforcement match.
 The column adapter passes `max_strips=0` to disable the CLI's two-strip test limit.
@@ -40,6 +42,47 @@ cells; the other adapters reuse their existing `records()` converters. Coordinat
 levels, layers, beam positions, bar roles, duplicate conflicts and known partial
 reinforcement remain attached to records. Raw candidates and duplicate evidence
 remain in each page's diagnostics. All page reports identify image/OCR reading.
+
+### Identical plan/DA record meanings (required for future parsers)
+
+`l2c.record_formats.align_records()` is the shared final adapter for UI tables,
+comparison and Appendix-A JSON. `align_result()` also upgrades saved typed results;
+the job/file-cache loaders persist that upgrade without invalidating extraction
+checkpoints or reopening PDFs. Individual parser review/debug JSON remains source
+evidence; the paired final datasets must pass through this shared adapter.
+
+Both sides emit `ElementRecord` with the same fields and an `armature` array of
+`repere`, `diametre`, `quantite`, `espacement_mm`, `longueur_mm`. Measurements are mm.
+Unknown optional attributes remain `null` in this fixed schema; do not invent values
+or create empty placeholder rows. Reinforcement roles align with entries one-to-one
+in debug metadata and use the same vocabulary and ordering on both sides:
+
+| Type | Shared record unit | Role order / primary meaning |
+|---|---|---|
+| Colonne | Coordinate + storey | `VERT`, `ETRI`: count/diameter of parallel verticals, diameter/spacing of ties |
+| Semelle | Coordinate + foundation | `LONG`, `TRAN`: two independent count/diameter requirements, even if equal |
+| Dalle | Located observation + storey + known layer | `NUM`, `ALP`: separate numeric/alphabetic directions; never implicitly sum them |
+| Poutre | One elevation view / beam mark | `longitudinale`, `peau`, `étriers`: retain every independent bar annotation and zone |
+
+Normalize level aliases (`FONDATION`/`FONDATIONS`, `RDC`/`REZ-DE-CHAUSSÉE`) and
+known slab layers (`INTEGRITE`, `HAUT`, `BAS`). Printed text orientation alone does
+not establish a slab reinforcement direction; unknown direction/layer remains
+`INCONNU` and requires review. Missing directions are explicit in `missing_roles`;
+never copy a known directional value to fill the other one. A partial footing with
+only a transverse label stays `TRAN`, rather than acquiring a longitudinal role.
+
+Fabricator bar marks are retained in `debug.reinforcement_details`. Spaced beam
+reinforcement uses diameter/spacing as its requirement; the number of fabricated
+pieces stays in evidence, rather than being mistaken for longitudinal quantity.
+Explicit physical lengths keep their mm meaning and still participate in comparison;
+missing plan lengths stay unknown. Beam zones and equal independent annotations
+are preserved; normalization does not establish spatial correspondence or conformity.
+Direction/layer/quantity/diameter/spacing/length differences and unresolved readings
+remain visible. Radiers will need their explicit type contract when connected.
+
+Shared-contract regressions are in `tests/test_record_formats.py` and
+`tests/test_column_records.py`. Future parsers must use this adapter and extend these
+tests when adding a type or a new role, rather than introducing another output shape.
 
 **Radiers are pending** and appear as “À venir”, not a completed extraction with
 zero results. Other projects are unavailable in this DA UI until their readers
@@ -83,7 +126,9 @@ do not wait for the project to finish. The worker persists `saved_files` and
 run's **Reprendre la génération** button keeps completed files, checks their
 fingerprints, and parses only missing/changed/corrupt entries. Bump `PARSER_VERSION`
 when extraction logic changes. A PDF that fails before completion restarts at its
-last page; intermediate OCR tiles are not checkpoints. Empty but successfully
+selected page; intermediate OCR tiles are not checkpoints. Columns save each page
+in `file_results/pages/` before continuing; retry resumes completed column pages
+even if the file aggregate was never saved. Empty but successfully
 parsed pages are cached with their explicit `no_callouts` report.
 
 The **Comparaison** section reads already loaded results without invoking any
@@ -442,13 +487,27 @@ The column drawing is a schedule:
 - A data cell contains reinforcement for that coordinate and storey.
 
 Both original-plan and DA column records already use the same unit: one coordinate
-and storey, with all that cell's reinforcement in `armature`. Current cached
-last-page-only coverage is **92 DA records / 19 grid coordinates**, compared with
-**395 original-plan records / 100 coordinates**. This is a coverage gap, not the
-beam callout-versus-element mismatch. Partie 1/2 are older releases; the last pages
-of Partie 2/3 repeat the same coordinates. Do not concatenate these releases to
-inflate coverage. Reading the rest of Partie 3 requires changing the user's
-last-page-only policy explicitly. No additional pages are read without that change.
+and storey. The shared `l2c.column_records` adapter stores the same primary
+specification on both sides: vertical quantity/diameter and tie diameter/spacing.
+Fabrication piece counts, marks, lengths, dowels and unspaced slab ties remain in
+`debug.reinforcement_details` and the source-cell diagnostics, rather than appearing
+as differences against a plan which never specifies those details. Explicit parallel
+vertical groups of one diameter are summed; a separately labelled `MURET` in the
+same cell is excluded from the column's primary specification and retained in evidence.
+The conversion is idempotent and upgrades trusted saved records without PDF/OCR.
+Appendix-A JSON downloads use this adapter too. A column's primary `armature`
+therefore has the same field meanings for `plan` and `atelier`.
+
+The original last-page result had 92 DA records. Reading all four pages initially
+gave 327, but missed nine I-labelled strips (45 cells) and misread floor boundaries.
+After the fixes Partie 3 supplies **371** records. Partie 1's fifth page supplies
+**23 additional basement columns**, giving **394 DA records versus 395 plan records**.
+Partie 1's first four pages and Partie 2 overlap the newer schedules; only the
+distinct fifth-page supplement is connected. Current-release coordinates take
+precedence over supplemental ones, with suppressed observations retained in diagnostics.
+Each selected column page has a durable checkpoint. The column scope marker changes
+without invalidating other DA file caches; old completed cell checkpoints are upgraded
+by re-reading only cells whose row boundaries changed.
 Paired current exports: `out/CLP/colonnes_plan.json` and
 `out/CLP/colonnes_atelier.json`; `out/CLP/colonnes_coverage.json` retains the
 scope/counts, level distributions and source-backed comparison findings.
@@ -457,7 +516,16 @@ The parser finds families of long vertical rules with common extents, then horiz
 rules crossing those families. It reads bottom coordinate cells, the storey-label
 strip, and finally the data cells.
 
-Storey labels and elevations are linked to row boundaries. Missing storeys can be
+Storey names define row ends independently of elevation-name pairing. The last
+observed `NIVEAU 5` label wins over a nearby `NIVEAU 5-TOIT` offset. `SOUS-SOL`
+defines the basement row even if its horizontal rule is missing; `TRÉFONDS`, `RADIER`
+and `EMPATTEMENT` reference lines do not split that building column into extra storeys.
+Foundation reinforcement below the lowest observed storey is excluded from column
+specifications. Grid-band OCR repairs a narrow capital I read as `1` and retries
+ambiguous I/L labels at larger glyph resolution. It prefers a standalone repeated
+coordinate over text merged with a section dimension. These rules read the DA's
+own pixels; original-plan data never supplies missing coordinates or specifications.
+Missing storeys can be
 inferred from neighbouring observed storeys and the row count; inferred values are
 marked. An incomplete reinforcement read gets a second OCR pass at higher detection
 resolution.
@@ -473,7 +541,7 @@ PYTHONPATH=src .venv/bin/python -m l2c.da.parsers.colonne_clp \
 
 The standalone CLI default input is CLP Partie 3, page 1. **Its default strip limit
 is currently 2** for quick experiments; use `--max-strips 0` for every strip.
-The dashboard always reads the last page and all strips. `--all-pages` reads every
+The dashboard reads all pages and all strips. `--all-pages` reads every
 column-schedule page in the standalone CLI. Optional worker processes each open their
 own PDF and OCR engine.
 

@@ -39,7 +39,9 @@ def render_comparison(plan, atelier):
                    f"{len({r.element for r in plan_columns if r.element != 'UNKNOWN'})} coordonnées ; "
                    f"DA : {len(da_columns)} enregistrements sur "
                    f"{len({r.element for r in da_columns if r.element != 'UNKNOWN'})} coordonnées. "
-                   "L'unité commune est une coordonnée et un niveau.")
+                   "L'unité commune est une coordonnée et un niveau. "
+                   "Même format : quantité/diamètre des verticales et diamètre/espacement des étriers. "
+                   "Les détails de fabrication restent dans les sources.")
         if atelier.meta.get('page_policy', {}).get('colonne', 'last' if atelier.meta.get('last_page_only') else '') == 'last' and da_columns:
             st.info("Colonnes : la lecture DA est limitée à la dernière page du tableau. "
                     "Les totaux ne représentent donc pas nécessairement les mêmes coordonnées que le plan complet.")
@@ -127,7 +129,7 @@ ATELIER = Dataset(
     scope_md=(
         "Avancement détaillé : **DA_PLAN.md**.\n\n"
         "- ✅ Quatre lecteurs CLP : colonnes, dalles, semelles et poutres\n"
-        "- ✅ Colonnes : toutes les pages de Partie 3 ; autres types : dernière page\n"
+        "- ✅ Colonnes : Partie 3 complet + sous-sol Partie 1 page 5 ; autres types : dernière page\n"
         "- ✅ Nettoyage des résultats, dédoublonnage et JSON annexe A\n"
         "- ⬜ Radiers : lecteur à venir\n"
         "- ⬜ Autres fichiers, projets et sélection directe des PDF dans l'interface\n\n"
@@ -203,7 +205,10 @@ def frames(result) -> tuple[pd.DataFrame, pd.DataFrame]:
          "échelle_pt_par_pouce": s.diagnostics.get("scale_pt_per_inch")}
         for s in result.sheets
     ]
-    return pd.DataFrame(rows), pd.DataFrame(units)
+    unit_columns = ['fichier', 'feuillet', 'page', 'dossier', 'type', 'niveau', 'lecture',
+                    'éléments', 'localisés', 'statut', 'motif', 'avertissements', 'grille',
+                    'échelle_pt_par_pouce']
+    return pd.DataFrame(rows), pd.DataFrame(units, columns=unit_columns)
 
 
 # ----------------------------------------------------------------- views

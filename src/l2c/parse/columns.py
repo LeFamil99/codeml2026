@@ -17,6 +17,7 @@ from ..geometry.grid import locator
 from ..geometry.symbols import (calibrate_scale, candidate_symbols, matches_dimensions,
                                 parse_dimensions)
 from ..model import Armature, Debug, ElementRecord
+from ..column_records import align_column_records
 from ..page import PreparedPage
 from ..units import UnitSystem, parse_spacing
 from ._assoc import UNREACHABLE, assign, runner_up_ratio
@@ -168,4 +169,4 @@ def extract(page: PreparedPage, system: UnitSystem) -> tuple[list[ElementRecord]
     diag["duplicate_locators"] = sorted({e for e in located if located.count(e) > 1})
     if diag["duplicate_locators"]:
         diag["warnings"].append(f"duplicate locators: {diag['duplicate_locators']}")
-    return records, diag
+    return align_column_records(records), diag
