@@ -28,6 +28,14 @@ make doctor      # check the environment and that the corpus is visible
 make ui          # launch the dashboard on http://localhost:8501
 ```
 
+On Windows (no `make`; needs [uv](https://docs.astral.sh/uv/)):
+
+```bat
+install.cmd      :: create .venv (Python 3.13), install everything incl. OCR extras
+ui.cmd           :: launch the dashboard on http://localhost:8501
+ui.cmd 8520      :: dashboard on another port
+```
+
 `make` on its own lists every target. Override any variable inline:
 
 ```bash
